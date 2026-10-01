@@ -1764,7 +1764,7 @@ test.describe("the panel", () => {
         });
     });
 
-    test("amends where a route out sends without dropping the rest of it", async ({ page }) => {
+    test("renames and amends a route out without dropping the rest of it", async ({ page }) => {
         const state: ApiState = {
             signedIn: true,
             maintenance: false,
@@ -1777,6 +1777,7 @@ test.describe("the panel", () => {
                     server: "10.0.0.2",
                     server_port: 1080,
                     username: "alice",
+                    custom_option: { value: "preserve" },
                 },
             ],
         };
@@ -1787,9 +1788,11 @@ test.describe("the panel", () => {
         await page.getByLabel("Edit upstream").click();
 
         const dialog = page.getByRole("dialog", { name: "Edit Outbound" });
+        const tag = dialog.getByLabel("Tag", { exact: true });
 
-        // Route rules name the tag, so it is shown but not changed.
-        await expect(dialog.getByLabel("Tag")).toBeDisabled();
+        await expect(tag).toBeEnabled();
+        await expect(tag).toHaveValue("upstream");
+        await tag.fill("upstream-renamed");
         await expect(dialog.getByLabel("Username")).toHaveValue("alice");
         await expect(dialog.getByLabel("Options")).toHaveCount(0);
         await expect(dialog.getByLabel("Server port")).toHaveValue("1080");
@@ -1797,13 +1800,17 @@ test.describe("the panel", () => {
         await dialog.getByRole("button", { name: "Save" }).click();
 
         await expect(dialog).toBeHidden();
+        await expect(
+            page.getByRole("heading", { name: "upstream-renamed", exact: true }),
+        ).toBeVisible();
         expect(state.outbounds?.[1]).toEqual({
             id: 2,
             type: "socks",
-            tag: "upstream",
+            tag: "upstream-renamed",
             server: "10.0.0.2",
             server_port: 1081,
             username: "alice",
+            custom_option: { value: "preserve" },
         });
     });
 
