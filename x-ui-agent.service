@@ -1,0 +1,19 @@
+[Unit]
+Description=x-ui node agent
+After=network-online.target x-ui-api.service sing-box.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Configure the node before enabling this unit. Keep the panel token in the
+# root-owned environment file, not in the world-readable unit or process args.
+EnvironmentFile=/etc/x-ui/agent.env
+ExecStart=/usr/local/x-ui/bin/x-ui-agent -config /etc/x-ui/agent.yaml
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

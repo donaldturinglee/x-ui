@@ -1,0 +1,101 @@
+# The whole configuration. There is one of these and no environment selecting
+# between several: this file is merged over the built-in defaults, and then
+# X_UI_* environment variables are merged over that. Later sources win.
+#
+# What differs between a laptop and a deployment is a handful of values -- an
+# address, a password, a session secret -- and those belong in the environment,
+# where they can differ without this file having to describe every place the
+# panel might run. Anything left out here keeps its default.
+#
+# Secrets do not belong here. Set X_UI_DATABASE_PASSWORD and
+# X_UI_SESSION_SECRET in the environment instead.
+
+log:
+  # debug also turns up the machinery underneath: the SQL behind every query,
+  # and gin's route table.
+  level: info
+
+server:
+  # Empty listen binds every interface. Set it to 127.0.0.1 when a reverse
+  # proxy in front of the panel is the only thing that should reach it.
+  listen: ""
+  port: 8000
+  base_path: /
+  # Only this Host header is answered when set; every other one gets a 403.
+  # Set it to the name the panel is reached by in a real deployment.
+  domain: ""
+  # Both or neither; setting one alone is refused at startup.
+  cert_file: ""
+  key_file: ""
+  # Peers whose X-Forwarded-* headers are believed. Leave empty when the panel
+  # faces clients directly: otherwise anyone can forge the address that ends up
+  # in the sign-in log and in the rate limiter's key. Fill in the proxy's
+  # address when the panel sits behind one.
+  trusted_proxies: []
+  # Where the built panel lives, in build/ below it, relative to the working
+  # directory. Without a build there, the API is served alone.
+  web_dir: web
+  read_header_timeout: 20s
+  read_timeout: 5m
+  write_timeout: 5m
+  idle_timeout: 2m
+  shutdown_timeout: 30s
+
+# The listener subscribers reach, separate from the panel in every way that
+# matters: its own port, its own certificate, its own host check. The panel
+# should be reachable by a handful of people; this has to be reachable by
+# everyone who was sold a subscription.
+subscription:
+  enabled: true
+  listen: ""
+  port: 8443
+  base_path: /sub/
+  # Set to the name subscribers fetch on; every other Host header is refused.
+  domain: ""
+  cert_file: ""
+  key_file: ""
+  # The address subscribers reach this on, when the panel cannot work it out
+  # from the request — behind a proxy that rewrites Host, or on a mapped port.
+  # Left empty, it is assembled from the domain, port and path above plus the
+  # host the request arrived on. This is what the panel shows an operator as a
+  # subscriber's subscription link.
+  public_url: ""
+  trusted_proxies: []
+  read_header_timeout: 20s
+  read_timeout: 30s
+  write_timeout: 60s
+  idle_timeout: 2m
+
+database:
+  # A full postgres:// URL overrides the parts below.
+  url: ""
+  host: 127.0.0.1
+  port: 5432
+  user: x_ui
+  password: "x_ui"
+  name: x_ui
+  # Refused at startup when the host is not this machine: a database reached
+  # across a network without TLS is wrong wherever it happens.
+  ssl_mode: disable
+  time_zone: UTC
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 5m
+  migrations_dir: migrations
+
+session:
+  # Generated at startup when empty, which logs everyone out on restart. Fine
+  # while developing; the API says so loudly for everywhere it is not.
+  secret: ""
+  # 0 keeps the session only until the browser closes.
+  max_age: 0s
+
+worker:
+  time_location: UTC
+  deplete_spec: "@every 1m"
+  # Periodic reset of every client's traffic. Empty disables it.
+  reset_spec: ""
+  cleanup_spec: "@daily"
+  stats_retention: 720h
+  stats_bucket: 1m

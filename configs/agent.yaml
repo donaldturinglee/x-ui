@@ -1,0 +1,51 @@
+# Configuration for the node agent, which runs on a node rather than on the
+# panel. Every value can be overridden with X_UI_AGENT_* environment
+# variables, and a node in a container is usually configured that way with no
+# file at all.
+
+panel:
+  # The panel's token API. The agent authenticates with a Token header, so this
+  # is the apiv2 prefix, not the browser one.
+  url: "https://panel.example.com/apiv2"
+  # Optional Host header and TLS certificate name when url dials the panel on
+  # a local interface. The installer sets this from server.domain.
+  host: ""
+  # Minted in the panel under Admins > API tokens. Set it from
+  # X_UI_AGENT_PANEL_TOKEN rather than writing it here.
+  token: ""
+  # How long an operator's edit can take to reach this node.
+  sync_interval: 30s
+  # How often measured traffic is sent back. Also the window in which a
+  # connection that opens and closes is missed entirely, which is what this
+  # interval is really chosen for.
+  report_interval: 10s
+  timeout: 15s
+  # Refused unless the panel is on loopback: the token travels on every request.
+  insecure_skip_verify: false
+
+core:
+  # Where the fetched configuration is written. Written through a temporary
+  # file and renamed, so a core reading it never sees a half-written document.
+  config_path: /etc/x-ui/config.json
+  # The helper copies the validated candidate to the core's readable file.
+  applied_config_path: /etc/sing-box/config.json
+  check_command: ["sing-box", "check", "-c", "{config}"]
+  # Run after the configuration changes. A command and its arguments, not a
+  # shell line — nothing here is interpreted by a shell.
+  # Starts sing-box on the first sync and reloads it on later changes.
+  reload_command: ["/usr/local/x-ui/bin/x-ui-core-reload"]
+  reload_timeout: 30s
+
+stats:
+  # "sing-box" reads authenticated users from the native API (1.14+).
+  # "clash" requires a Clash API with user metadata; "none" disables reporting.
+  source: sing-box
+  # Matches a services entry with type: api, listen: 127.0.0.1,
+  # listen_port: 9091 and dashboard: false in the panel's base configuration.
+  url: "http://127.0.0.1:9091"
+  # Matches the API service's secret. Prefer the environment.
+  secret: ""
+  timeout: 10s
+
+log:
+  level: info

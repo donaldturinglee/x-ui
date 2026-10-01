@@ -1,0 +1,32 @@
+[Unit]
+Description=x-ui API
+# After the database when it is on this host, so a boot does not start the
+# panel against a server still coming up. Elsewhere, there is no such unit and
+# this waits for nothing.
+After=network.target postgresql.service
+Wants=network.target
+
+[Service]
+Type=simple
+# The configuration is configs/config.yaml below it, as install.sh wrote it. The
+# worker and x-ui-cli read the same file, so the three never disagree
+# about which database they mean.
+WorkingDirectory=/usr/local/x-ui/
+ExecStart=/usr/local/x-ui/bin/x-ui-api
+Restart=on-failure
+RestartSec=10s
+
+# Nothing the panel runs needs to gain privileges it was not started with.
+NoNewPrivileges=true
+
+# Its own /tmp, so nothing else on the host can read or replace what a backup
+# uploaded to the panel for restoring is spilled to disk as.
+PrivateTmp=true
+
+# read-only rather than true: externally managed certificates, including those
+# from earlier installs, may still be under /root. The API reads but never
+# writes them.
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

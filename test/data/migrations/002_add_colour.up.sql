@@ -1,0 +1,1 @@
+ALTER TABLE widgets ADD COLUMN colour text NOT NULL DEFAULT '';

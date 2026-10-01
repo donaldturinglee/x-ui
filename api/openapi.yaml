@@ -1,0 +1,1888 @@
+openapi: 3.0.3
+
+info:
+  title: x-ui
+  version: "1.0.0"
+  description: |
+    Control-plane API for a tunnel panel: operator accounts, subscribers
+    (clients), listeners (inbounds) with the TLS each terminates with, reported
+    traffic, and the audit log.
+
+    Every endpoint answers with the same envelope:
+
+        { "success": true,  "msg": "", "obj": <payload> }
+        { "success": false, "msg": "<reason>", "obj": null }
+
+    `success` mirrors the status code; it is there so a client can branch on
+    one field rather than on a status line it may not see through a proxy.
+
+    The same endpoints are mounted twice, under two different authentication
+    schemes. `{basePath}api` takes a session cookie and is what a browser uses;
+    `{basePath}apiv2` takes a `Token` header and is what a script or a node
+    uses. Only the cookie API enforces same-origin, because a cross-site page
+    cannot set a custom header without a CORS preflight that is never answered.
+
+    Only GET, POST and DELETE are used. An update is a POST to the record's own
+    path rather than a PUT: a panel is reached through whatever sits in front of
+    it — a corporate proxy, an embedded webview, a captive network's filter —
+    and the three are the ones those are relied on to forward.
+
+servers:
+  - url: "http://localhost:8000"
+    description: Panel — operators, authenticated
+  - url: "http://localhost:8443"
+    description: Subscriptions — subscribers, unauthenticated, its own listener
+
+tags:
+  - name: auth
+    description: Sessions and operator credentials
+  - name: clients
+    description: Subscribers, their quotas and their traffic
+  - name: inbounds
+    description: Listeners, each with the TLS it terminates with
+  - name: outbounds
+    description: Routes out of the node, WireGuard tunnels among them
+  - name: panel
+    description: The aggregate poll a panel front end runs on
+  - name: config
+    description: The document a node is configured from
+  - name: settings
+    description: Runtime options
+  - name: telemetry
+    description: Traffic reporting, charts, audit log and status
+  - name: system
+    description: Host status, key material, certificate probe, backup and restore
+  - name: subscriptions
+    description: >
+      Served to subscribers on the second listener (default port 8443), not to
+      operators. Unauthenticated: the subscription id is the only secret.
+
+paths:
+  /healthz:
+    get:
+      tags: [telemetry]
+      summary: Liveness
+      description: |
+        Unauthenticated, so a load balancer and the CLI probe can reach it.
+        Answers 503 when the database is not reachable. The reason is logged
+        rather than returned: it names the database host and user.
+      security: []
+      responses:
+        "200":
+          description: Serving
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /sub/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+        description: The subscriber's name, which is their subscription id.
+    get:
+      tags: [subscriptions]
+      summary: Fetch a subscription
+      description: |
+        Served on the **subscription listener** (default port 8443), not on the
+        panel's. No authentication: the id is the only secret, so every failure
+        — unknown id, disabled subscriber, database error — answers with an
+        identical empty 404. Distinguishing them would let a caller map which
+        ids exist.
+
+        The response carries `Subscription-Userinfo`, `Profile-Update-Interval`
+        and `Profile-Title`, which is where client applications read the
+        remaining quota and expiry from.
+      security: []
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [links, json, clash]
+            default: links
+          description: |
+            `links` is one URI per line, base64-encoded when the `subEncode`
+            setting is on. `json` is a sing-box client configuration. `clash` is
+            Clash/Mihomo YAML. Client applications support one or two of these
+            and not the others, which is why one is not enough.
+      responses:
+        "200":
+          description: The subscription
+          headers:
+            Subscription-Userinfo:
+              schema: { type: string }
+              description: "`upload=…; download=…; total=…; expire=…`, in bytes and unix seconds. The current period, not the lifetime total."
+            Profile-Update-Interval:
+              schema: { type: integer }
+              description: Hours a client should wait before refetching.
+            Profile-Title:
+              schema: { type: string }
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            text/plain:
+              schema: { type: string }
+            application/json:
+              schema: { type: object, additionalProperties: true }
+            text/yaml:
+              schema: { type: string }
+        "404":
+          description: No such subscription, or it is disabled. The body is empty either way.
+    head:
+      tags: [subscriptions]
+      summary: The subscription's headers only
+      description: |
+        The same headers without the body, so a client can refresh the quota it
+        displays without downloading the whole subscription — which some do
+        every few minutes.
+      security: []
+      responses:
+        "200":
+          description: The headers
+        "404":
+          description: No such subscription, or it is disabled.
+
+  /api/signin:
+    post:
+      tags: [auth]
+      summary: Sign in and start a session
+      description: |
+        Failures are deliberately indistinguishable from one another: an
+        unknown account and a wrong password answer the same way, and take the
+        same time, so the form cannot be used to find out which usernames
+        exist. Repeated failures from one address are locked out for a while.
+
+        An account with two-factor authentication on also needs the code its
+        authenticator app shows. The code is asked for only once the password
+        is right: sent without one, such a sign-in is answered 401 with
+        `obj.twoFactor` set, and a client asks for the code and sends all three
+        again. A wrong code counts towards the lockout as a wrong password
+        does, and a code that has been accepted once is not accepted again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                code:
+                  type: string
+                  description: |
+                    The six digits the authenticator app shows, spaces ignored.
+                    Left out until the account asks for one.
+      responses:
+        "200":
+          description: Signed in; the session cookie is set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          description: |
+            The credentials were wrong, or the password was right and the
+            account takes a code that was not sent. Only the second carries
+            `obj.twoFactor`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        nullable: true
+                        properties:
+                          twoFactor: { type: boolean }
+        "403":
+          description: Locked out after too many failed attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/signout:
+    post:
+      tags: [auth]
+      summary: Sign out and end the session
+      security: []
+      responses:
+        "200":
+          description: Signed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/me:
+    get:
+      tags: [auth]
+      summary: The signed-in operator
+      responses:
+        "200":
+          description: The account
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/me/credentials:
+    post:
+      tags: [auth]
+      summary: Change your own username and password
+      description: |
+        The account is taken from the session, never from the request: with an
+        id in the body, any operator could rewrite anyone else's credentials.
+        The session is cleared on success, so a new sign-in is required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oldPassword, newUsername, newPassword]
+              properties:
+                oldPassword: { type: string, format: password }
+                newUsername: { type: string }
+                newPassword: { type: string, format: password, minLength: 8, maxLength: 72 }
+      responses:
+        "200":
+          description: Changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/me/two-factor/setup:
+    post:
+      tags: [auth]
+      summary: Start turning two-factor authentication on
+      description: |
+        Mints a secret for the signed-in operator's authenticator app (TOTP:
+        SHA-1, six digits, 30 seconds) and the `otpauth://` address a QR code
+        of it holds. Nothing is stored: sign-in starts asking for codes only
+        once `/me/two-factor/enable` has confirmed one against the secret, so a
+        setup abandoned half way locks nobody out.
+      responses:
+        "200":
+          description: The secret, and the address an app reads it from
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          secret: { type: string, description: Base32, without padding. }
+                          uri: { type: string, example: "otpauth://totp/x-ui:operator?algorithm=SHA1&digits=6&issuer=x-ui&period=30&secret=…" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Two-factor authentication is already on
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/me/two-factor/enable:
+    post:
+      tags: [auth]
+      summary: Turn two-factor authentication on
+      description: |
+        Takes the secret `/me/two-factor/setup` handed out and a code the app
+        shows for it. The code is what proves the app holds the secret before
+        sign-in starts to depend on it; a code that does not match is most
+        often a device whose clock has drifted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret, code]
+              properties:
+                secret: { type: string }
+                code: { type: string, description: Six digits, spaces ignored. }
+      responses:
+        "200":
+          description: On; the next sign-in asks for a code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Two-factor authentication is already on
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/me/two-factor/disable:
+    post:
+      tags: [auth]
+      summary: Turn two-factor authentication off
+      description: |
+        Takes a code, as signing in does: a session left open on an unattended
+        screen must not be enough to take the second factor away. An operator
+        who lost their authenticator is let back in from the CLI, with
+        `-disable-two-factor`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, description: Six digits, spaces ignored. }
+      responses:
+        "200":
+          description: Off; sign-in takes the password alone again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Two-factor authentication is not on
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/users:
+    get:
+      tags: [auth]
+      summary: List operator accounts
+      responses:
+        "200":
+          description: Accounts, without password hashes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { $ref: "#/components/schemas/User" }
+
+  /api/tokens:
+    get:
+      tags: [auth]
+      summary: List your API tokens
+      description: The secrets are masked; a token's value is returned only when it is created.
+      responses:
+        "200":
+          description: Tokens
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { $ref: "#/components/schemas/Token" }
+    post:
+      tags: [auth]
+      summary: Mint an API token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expiryDays:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  description: 0 mints a token that does not expire.
+                desc: { type: string, maxLength: 200 }
+      responses:
+        "201":
+          description: Created. This is the only response that carries the value.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/NewToken" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/tokens/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    delete:
+      tags: [auth]
+      summary: Revoke one of your own tokens
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/clients:
+    get:
+      tags: [clients]
+      summary: List subscribers
+      parameters:
+        - { in: query, name: group, schema: { type: string } }
+        - { in: query, name: search, schema: { type: string }, description: Matches name, description or remark, case-insensitively. }
+        - { in: query, name: enabled, schema: { type: boolean } }
+        - { in: query, name: limit, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { in: query, name: offset, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: A page of subscribers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          clients:
+                            type: array
+                            items: { $ref: "#/components/schemas/Client" }
+                          total: { type: integer, format: int64 }
+                          limit: { type: integer }
+                          offset: { type: integer }
+    post:
+      tags: [clients]
+      summary: Create a subscriber
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Client" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/clients/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [clients]
+      summary: Read a subscriber
+      responses:
+        "200":
+          description: The subscriber
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Client" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [clients]
+      summary: Update a subscriber
+      description: |
+        Traffic counters and timestamps are ignored if sent: they are the
+        server's to write, and accepting them would let a stale form posted
+        back hand a subscriber its quota again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Client" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [clients]
+      summary: Delete a subscriber
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/clients/{id}/links:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [clients]
+      summary: The connection links this subscriber can use
+      description: |
+        One URI per inbound the subscriber is assigned to, per address that
+        inbound publishes. A `mixed` inbound yields two, one for each protocol
+        it speaks.
+
+        Built on read, so a change to an inbound or its TLS shows up the next
+        time they are fetched. An inbound the panel cannot render is
+        logged and skipped rather than failing the request: a subscription one
+        node short is recoverable, an error leaves the subscriber with nothing.
+
+        When an inbound publishes no addresses of its own, the host this request
+        arrived on is used with the inbound's listening port.
+      responses:
+        "200":
+          description: The links
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { type: string }
+                        example:
+                          - "vless://11111111-2222-3333-4444-555555555555@edge.example.com:443?type=ws&path=%2Fray&security=tls&sni=edge.example.com#alice-edge"
+                          - "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@edge.example.com:8388#alice-ss"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/clients/{id}/reset-traffic:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [clients]
+      summary: Reset one subscriber's current period
+      description: The period's traffic is rolled into the lifetime totals, not discarded.
+      responses:
+        "200":
+          description: Reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/subscription-uri:
+    get:
+      tags: [clients]
+      summary: Where subscribers fetch from
+      description: |
+        One answer for the deployment rather than one per subscriber: a
+        subscriber's own URL is this with their name on the end.
+
+        `subscription.public_url` wins when it is set, because a deployment
+        behind something that rewrites Host cannot be worked out from the
+        request. Otherwise it is assembled from the subscription listener's own
+        configuration and the host the request arrived on.
+
+        Answered even when subscriptions are switched off — the address is still
+        what it would be, and saying nothing would read as broken rather than
+        disabled.
+      responses:
+        "200":
+          description: The base a subscription is fetched from
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          uri: { type: string, example: "https://sub.example.com:8443/sub/" }
+                          enabled: { type: boolean }
+
+  /api/client-groups:
+    get:
+      tags: [clients]
+      summary: The group names in use
+      responses:
+        "200":
+          description: Group names
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { type: string }
+
+  /api/traffic:
+    post:
+      tags: [telemetry]
+      summary: Report traffic
+      description: |
+        Reports are deltas since the last report, never running totals: a node
+        that restarts and counts from zero again would otherwise subtract its
+        own history from every subscriber it serves. Reports inside the same
+        bucket accumulate into one row per resource and direction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reports]
+              properties:
+                reports:
+                  type: array
+                  maxItems: 10000
+                  items: { $ref: "#/components/schemas/TrafficReport" }
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          accepted: { type: integer }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "413":
+          description: Too many reports in one request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/traffic/reset:
+    post:
+      tags: [clients]
+      summary: Reset every subscriber's traffic and re-enable them
+      responses:
+        "200":
+          description: How many subscribers were touched
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          reset: { type: integer, format: int64 }
+
+  /api/inbounds:
+    get:
+      tags: [inbounds]
+      summary: List listeners
+      responses:
+        "200":
+          description: Listeners, with their stored options flattened alongside the known fields
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { $ref: "#/components/schemas/Inbound" }
+    post:
+      tags: [inbounds]
+      summary: Create a listener
+      parameters:
+        - name: initClients
+          in: query
+          schema: { type: string }
+          description: |
+            Comma-separated client ids to assign this inbound to as it is
+            created, in the same transaction. In the query rather than the body
+            because the body is the inbound itself, and the core has no such
+            field. An unparseable entry is skipped rather than failing the
+            request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Inbound" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Inbound" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/inbounds/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [inbounds]
+      summary: Read a listener
+      responses:
+        "200":
+          description: The listener
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Inbound" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [inbounds]
+      summary: Update a listener
+      description: |
+        Renaming a tag updates route and DNS inbound conditions, inbound detours,
+        configured inbound statistics selectors, and traffic history atomically.
+        The listener keeps its id and client assignments. Former tags remain
+        reserved for the same listener and resolve delayed traffic reports to
+        its current tag, including after repeated renames.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Inbound" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Inbound" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [inbounds]
+      summary: Delete a listener
+      description: |
+        The inbound is also removed from every client that referenced it, in the
+        same transaction. The references live in a jsonb array with no foreign
+        key behind them, so without the cascade the deleted id would stay in
+        every list that named it and those subscriptions would silently come
+        back one node short.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/outbounds:
+    get:
+      tags: [outbounds]
+      summary: List the routes out of the node
+      responses:
+        "200":
+          description: Outbounds, with their stored options flattened alongside the known fields
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { $ref: "#/components/schemas/Outbound" }
+    post:
+      tags: [outbounds]
+      summary: Create an outbound
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Outbound" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Outbound" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/outbounds/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [outbounds]
+      summary: Read an outbound
+      responses:
+        "200":
+          description: The outbound
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Outbound" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [outbounds]
+      summary: Update an outbound
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Outbound" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Outbound" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [outbounds]
+      summary: Delete an outbound
+      description: |
+        Refused when it is the last one. A configuration with inbounds and no
+        outbounds routes nothing, and the core refuses to start on it — so the
+        operator is told before the node stops working rather than after.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/load:
+    get:
+      tags: [panel]
+      summary: Everything the panel renders, in one response
+      description: |
+        Send back the `lu` from the previous answer. When nothing has changed
+        since then the reply carries only the cursor, `onlines` and the
+        maintenance flag; when something has, it carries the whole state.
+
+        The cursor is the highest audit-log id, read from the database rather
+        than held in memory: the API and the worker are separate processes, and
+        the worker disabling a depleted client is exactly the kind of change the
+        panel has to notice.
+
+        `onlines` and `maintenance` come back on every poll, changed or not.
+        They are what moves between changes, and they are why a poll that found
+        nothing is still worth making.
+
+        The client list is capped — past that, use the paged `/clients`
+        listing.
+      parameters:
+        - name: lu
+          in: query
+          schema: { type: integer, format: int64 }
+          description: The cursor from the previous answer. Omit it for a full snapshot.
+      responses:
+        "200":
+          description: The snapshot
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Snapshot" }
+
+  /api/config:
+    get:
+      tags: [config]
+      summary: The generated configuration a node fetches
+      description: |
+        Assembled on read: the base document with `inbounds` and `outbounds`
+        filled in from their tables, and `endpoints` from the WireGuard
+        outbounds, which the core runs as endpoints. A node gets what the
+        database says now, not what it said when something was last saved.
+
+        In maintenance the listeners are withheld from the document, and
+        `maintenance` says so: an empty `inbounds` cannot otherwise be told
+        from a panel with none.
+      responses:
+        "200":
+          description: The whole document, in the proxy core's own shape
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          config: { $ref: "#/components/schemas/CoreConfig" }
+                          maintenance: { type: boolean }
+
+  /api/config/download:
+    get:
+      tags: [config]
+      summary: The generated configuration as a file
+      description: |
+        The same document without the envelope, as an attachment. A core parsing
+        its own configuration would choke on the envelope; it exists for a panel
+        deciding what to render.
+      responses:
+        "200":
+          description: The document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CoreConfig" }
+
+  /api/config/base:
+    get:
+      tags: [config]
+      summary: Read the base document
+      description: Everything in the configuration that is not an object the panel models.
+      responses:
+        "200":
+          description: The base document
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreConfig" }
+    post:
+      tags: [config]
+      summary: Replace the base document
+      description: |
+        The body is the document itself, not a wrapper. Every managed key —
+        `inbounds`, `outbounds`, `endpoints` — is refused rather than ignored:
+        generation overwrites them from the database either way, so storing
+        them would look like it had taken effect and never would. An
+        unrecognised top-level key is refused for the same reason: it would be
+        dropped at the next generation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CoreConfig" }
+      responses:
+        "200":
+          description: The base document after the write
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreConfig" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/config/base/reset:
+    post:
+      tags: [config]
+      summary: Restore the base document to the shipped default
+      responses:
+        "200":
+          description: The base document after the reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/settings:
+    get:
+      tags: [settings]
+      summary: Read the runtime settings
+      description: |
+        Only the options an operator may change, every value a string whatever
+        it stands for. Anything needed to start the process comes from the
+        configuration files, and `/settings/startup` shows it.
+
+        | Key | Default | |
+        |---|---|---|
+        | `subUpdates` | `12` | Hours a client waits before fetching its subscription again |
+        | `subEncode` | `true` | Base64 the `links` format |
+        | `subShowInfo` | `false` | Name the remaining quota and expiry in the subscription |
+        | `tgBotEnable` | `false` | Send notifications through the Telegram bot |
+        | `tgBotToken` | | The bot's token, from @BotFather |
+        | `tgBotChatIds` | | The chats notifications go to, comma separated; negative for a group |
+        | `tgNotifySignIn` | `true` | Notify each operator sign-in |
+        | `tgNotifyDeplete` | `true` | Notify subscribers taken offline for quota or expiry |
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        additionalProperties: { type: string }
+    post:
+      tags: [settings]
+      summary: Write runtime settings
+      description: |
+        An unknown key is refused rather than stored: it would be written, read
+        by nothing, and look to the operator like it had taken effect.
+
+        The Telegram bot's settings are judged as they are written: a token
+        has to be in the shape @BotFather hands one out in, a chat id is a
+        number, and the bot is not switched on without a token and at least
+        one chat — it would look set up and never send a thing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string }
+      responses:
+        "200":
+          description: The settings after the write
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/settings/reset:
+    post:
+      tags: [settings]
+      summary: Restore the runtime settings to their defaults
+      description: |
+        Named keys put back those alone, which is how one part of the settings
+        page restores its own without taking the rest with it. No body, or no
+        keys, puts back every one of them.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys:
+                  type: array
+                  items: { type: string }
+                  example: [subUpdates, subEncode, subShowInfo]
+      responses:
+        "200":
+          description: The settings after the reset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        additionalProperties: { type: string }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/settings/startup:
+    get:
+      tags: [settings]
+      summary: The configuration the process started with
+      description: |
+        What was read from `configs/config.yaml` and the `X_UI_*`
+        environment at startup, which takes effect at the next one. It is shown
+        rather than written: a panel that rewrote its own listener could leave
+        itself unreachable, and the file is the one place an operator can
+        always put right. Nothing secret is in it.
+      responses:
+        "200":
+          description: The startup configuration
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/StartupSettings" }
+
+  /api/telegram/test:
+    post:
+      tags: [settings]
+      summary: Send a test message through the Telegram bot
+      description: |
+        Sent to every chat with the bot as it is saved, switched on or not, so
+        a token can be tried before anything depends on it. What Telegram said
+        of a message it refused comes back as the reason.
+      responses:
+        "200":
+          description: Every chat was sent the message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          description: No token or chat is saved, Telegram could not be reached, or it refused a message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/maintenance:
+    get:
+      tags: [settings]
+      summary: Whether service is stopped on purpose
+      responses:
+        "200":
+          description: The current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+    post:
+      tags: [settings]
+      summary: Stop or resume service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enable]
+              properties:
+                enable: { type: boolean }
+      responses:
+        "200":
+          description: The new state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/system:
+    get:
+      tags: [system]
+      summary: What the process, the host and the database are doing
+      description: |
+        Every section is optional. A reading that cannot be taken — a container
+        with no access to the host's disks, a platform the collector does not
+        cover — is omitted rather than reported as zero: on a dashboard those
+        look identical and mean opposite things. What failed is named in
+        `warnings`.
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  /api/keypairs:
+    get:
+      tags: [system]
+      summary: Generate key material
+      description: |
+        Generated, returned once, never stored, and answered with
+        `Cache-Control: no-store`. It exists because the alternative to
+        generating a private key here is generating it on a web page somebody
+        else runs.
+
+        ECH keys are not generated: they need the core's own implementation, and
+        producing something that merely looks like one would be worse.
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [reality, wireguard, tls, openvpn]
+        - name: options
+          in: query
+          schema: { type: string }
+          description: |
+            For `tls`, the server name or address the certificate is for. For
+            `wireguard`, an existing private key, in which case only the
+            matching public key is returned and the private key is not echoed
+            back.
+      responses:
+        "200":
+          description: The key material
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Keypair" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/cert-probe:
+    post:
+      tags: [system]
+      summary: Look at the certificate a host presents
+      description: |
+        Verification is deliberately skipped — refusing to look at a certificate
+        because it does not verify is exactly backwards for a diagnostic. The
+        result is described, never trusted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string, description: A host name, not a URL. }
+                port: { type: string, default: "443" }
+      responses:
+        "200":
+          description: What the host presented
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CertificateProbe" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/backup:
+    get:
+      tags: [system]
+      summary: Export the panel's data
+      description: |
+        A logical export — a JSON document of every table — not a file copy.
+        `pg_dump` remains the right tool for an operational backup; this is the
+        one the panel can offer through its own API, and the one that restores
+        into a fresh install of a different version.
+
+        It contains every credential the panel holds, so taking one is recorded
+        in the audit log and the response carries `Cache-Control: no-store`.
+      parameters:
+        - name: exclude
+          in: query
+          schema: { type: string }
+          description: Comma-separated tables to leave out, e.g. `stats,changes`.
+      responses:
+        "200":
+          description: The export, as a file
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /api/backup/restore:
+    post:
+      tags: [system]
+      summary: Replace the panel's data with an export
+      description: |
+        Runs in a single transaction, so a file that turns out to be unreadable
+        halfway through leaves the existing data untouched rather than
+        half-replaced. A table the export does not carry is left alone rather
+        than emptied.
+
+        The operator accounts come from the backup too, so whoever runs this
+        will be signing in with the backup's credentials, not their own.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [backup]
+              properties:
+                backup: { type: string, format: binary }
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/stats:
+    get:
+      tags: [telemetry]
+      summary: A downsampled traffic series
+      parameters:
+        - { in: query, name: resource, required: true, schema: { type: string, enum: [inbound, outbound, client] } }
+        - { in: query, name: tag, required: true, schema: { type: string } }
+        - { in: query, name: hours, schema: { type: integer, default: 24 }, description: Used when start and end are not both given. }
+        - { in: query, name: start, schema: { type: integer, format: int64 } }
+        - { in: query, name: end, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: The series
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Series" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/onlines:
+    get:
+      tags: [telemetry]
+      summary: What has moved traffic recently
+      responses:
+        "200":
+          description: Tags by resource
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/Onlines" }
+
+  /api/changes:
+    get:
+      tags: [telemetry]
+      summary: The audit log, newest first
+      parameters:
+        - { in: query, name: actor, schema: { type: string } }
+        - { in: query, name: key, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, default: 100, maximum: 1000 } }
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { $ref: "#/components/schemas/Change" }
+
+  /api/logs:
+    get:
+      tags: [telemetry]
+      summary: Recent process log lines
+      description: Read from an in-memory ring, so it shows this process only and does not survive a restart.
+      parameters:
+        - { in: query, name: count, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { in: query, name: level, schema: { type: string, default: info, enum: [debug, info, warning, error] } }
+      responses:
+        "200":
+          description: Log lines
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: array
+                        items: { type: string }
+
+  /api/status:
+    get:
+      tags: [telemetry]
+      summary: Version, uptime and maintenance state
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: x-ui
+      description: Set by /api/signin. Used under the `{basePath}api` prefix.
+    token:
+      type: apiKey
+      in: header
+      name: Token
+      description: Minted by /api/tokens. Used under the `{basePath}apiv2` prefix.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+
+  responses:
+    Invalid:
+      description: The request has to be fixed before it can succeed
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  obj: { $ref: "#/components/schemas/ValidationErrors" }
+    Unauthorized:
+      description: Not signed in, or the credentials were wrong
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+    NotFound:
+      description: No such record
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+    Conflict:
+      description: Collides with something already stored
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+    Unavailable:
+      description: A dependency is not reachable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+
+  schemas:
+    Envelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        msg: { type: string }
+        obj: { nullable: true }
+
+    ValidationErrors:
+      type: object
+      properties:
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              reason: { type: string }
+
+    User:
+      type: object
+      description: The password hash and the two-factor secret are never returned.
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        twoFactor: { type: boolean, description: Whether signing in asks for an authenticator app's code. }
+        lastSignIn: { type: string, description: "\"2006-01-02 15:04:05 <ip>\", or empty." }
+        createdAt: { type: integer, format: int64, description: Unix seconds. }
+
+    StartupSettings:
+      type: object
+      description: Durations are whole seconds.
+      properties:
+        panel: { $ref: "#/components/schemas/StartupListener" }
+        subscription:
+          allOf:
+            - $ref: "#/components/schemas/StartupListener"
+            - type: object
+              properties:
+                enabled: { type: boolean }
+                publicUrl: { type: string, description: The address subscribers are told to reach it on, or empty. }
+        session:
+          type: object
+          properties:
+            maxAgeSeconds: { type: integer, format: int64, description: "0 keeps a session until the browser closes." }
+            secretSet: { type: boolean, description: "Without a configured secret, one is generated at every start and every session ends with the process." }
+        worker:
+          type: object
+          properties:
+            timeLocation: { type: string }
+            depleteSpec: { type: string, description: "A cron spec; empty or `off` is off." }
+            resetSpec: { type: string, description: "A cron spec; empty or `off` is off." }
+            cleanupSpec: { type: string, description: "A cron spec; empty or `off` is off." }
+            statsRetentionSeconds: { type: integer, format: int64 }
+            statsBucketSeconds: { type: integer, format: int64 }
+        logLevel: { type: string }
+
+    StartupListener:
+      type: object
+      properties:
+        listen: { type: string }
+        port: { type: integer }
+        basePath: { type: string }
+        domain: { type: string }
+        certFile: { type: string }
+        keyFile: { type: string }
+        trustedProxies:
+          type: array
+          items: { type: string }
+
+    Token:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        desc: { type: string }
+        token: { type: string, description: Masked as "****" everywhere except the create response. }
+        expiry: { type: integer, format: int64, description: "Unix seconds; 0 never expires." }
+        userId: { type: integer, format: int64 }
+        createdAt: { type: integer, format: int64 }
+
+    NewToken:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        token: { type: string, description: The value, returned exactly once. }
+        desc: { type: string }
+        expiry: { type: integer, format: int64 }
+
+    ClientInput:
+      type: object
+      required: [name]
+      properties:
+        enable: { type: boolean, default: true }
+        name: { type: string, maxLength: 64, description: Unique. It is the key traffic is reported against. }
+        inbounds:
+          type: array
+          items: { type: integer, format: int64 }
+          description: Listener ids this subscriber may connect through. Every id must exist.
+        config:
+          type: object
+          additionalProperties: true
+          description: Per-protocol identities the subscriber authenticates with.
+        volume: { type: integer, format: int64, minimum: 0, description: "Quota in bytes; 0 is unlimited." }
+        expiry: { type: integer, format: int64, minimum: 0, description: "Unix seconds; 0 never expires." }
+        desc: { type: string, maxLength: 500 }
+        group: { type: string, maxLength: 64 }
+        remark: { type: string, maxLength: 500 }
+        delayStart: { type: boolean, description: Hold the clock until the first byte. }
+        autoReset: { type: boolean }
+        resetDays: { type: integer, minimum: 0, maximum: 365 }
+
+    Client:
+      allOf:
+        - $ref: "#/components/schemas/ClientInput"
+        - type: object
+          properties:
+            id: { type: integer, format: int64 }
+            up: { type: integer, format: int64, readOnly: true }
+            down: { type: integer, format: int64, readOnly: true }
+            totalUp: { type: integer, format: int64, readOnly: true, description: Traffic from every period before this one. }
+            totalDown: { type: integer, format: int64, readOnly: true }
+            createdAt: { type: integer, format: int64, readOnly: true }
+            onlineAt: { type: integer, format: int64, readOnly: true }
+            nextReset: { type: integer, format: int64 }
+
+    Inbound:
+      type: object
+      required: [type, tag]
+      description: |
+        Only the fields the panel reasons about have columns. Every other option
+        the proxy core accepts for this listener type is stored verbatim and
+        appears here alongside them.
+
+        Its TLS is one of those options: `tls` is the block the core terminates
+        with, Reality included, and is written into the generated configuration
+        as it is. What a client is handed to meet it — the uTLS fingerprint, the
+        Reality public key, `insecure` — is no option the core takes on a
+        listener, so it is kept in `out_json.tls` and read only into the links
+        and subscriptions built for it. A `tls` that is not an object, or that
+        still names an unsupported `certificate_provider`, is answered with a
+        400. `tls_id`, the reference's pointer to a TLS configuration kept apart
+        from the listener, is ignored.
+      additionalProperties: true
+      properties:
+        id: { type: integer, format: int64 }
+        type: { type: string, maxLength: 64 }
+        tag:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Unique, without whitespace. Traffic is reported against it. A tag reserved by another listener cannot be reused, even after that listener is deleted.
+        tls: { type: object, additionalProperties: true, description: "The core's inbound TLS block. Absent means no TLS." }
+        addrs: { type: array, items: { type: string } }
+        out_json:
+          type: object
+          additionalProperties: true
+          description: What a client is told about this listener, the client half of its TLS under `tls` among it.
+
+    Outbound:
+      type: object
+      required: [type, tag]
+      description: |
+        Only the fields the panel reasons about have columns. Every other option
+        the proxy core accepts for this outbound type is stored verbatim and
+        appears here alongside them. A `tls` block with `enabled: false` is kept
+        in storage but left out of the generated configuration.
+
+        A `block` outbound refuses every connection sent to it and takes no
+        options: the core refuses the whole configuration over any key besides
+        `type` and `tag`, so a write carrying one is answered with a 400 naming
+        each such key as a field.
+
+        A `wireguard` outbound is a WireGuard tunnel. The core has run WireGuard
+        as an endpoint since 1.11 and refuses it among its outbounds since 1.13,
+        so it carries the options of the core's WireGuard endpoint — `address`,
+        `private_key`, `peers` with the far end's `address` and `port`, `mtu`
+        and the rest — and is written into `endpoints` of the generated
+        configuration rather than `outbounds`. Rules and detours name it by its
+        tag as they name any outbound. The keys only the old WireGuard outbound
+        took (`server`, `server_port`, `local_address`, `peer_public_key`,
+        `pre_shared_key`, `reserved`, `system_interface`, `interface_name`,
+        `gso`, `network`) are answered with a 400 naming each, as for `block`.
+      additionalProperties: true
+      properties:
+        id: { type: integer, format: int64 }
+        type: { type: string, maxLength: 64, example: direct }
+        tag: { type: string, maxLength: 64, description: Unique. Route rules detour to it by this name. }
+
+    CoreConfig:
+      type: object
+      description: |
+        The document a node is configured from. Every top-level key the core
+        accepts is carried through.
+
+        `inbounds`, `outbounds` and `endpoints` are managed as their own
+        objects: they are filled in from their tables on generation and are
+        refused in a base document. `endpoints` holds the WireGuard outbounds,
+        which the core runs as endpoints. `services` is not modelled: what the
+        base document carries is passed through as it is.
+
+      properties:
+        $schema: { type: string }
+        log: { type: object, additionalProperties: true }
+        dns: { type: object, additionalProperties: true }
+        ntp: { type: object, additionalProperties: true }
+        certificate: { type: object, additionalProperties: true }
+        http_clients: { type: array, items: { type: object, additionalProperties: true } }
+        network_namespaces: { type: array, items: { type: object, additionalProperties: true } }
+        inbounds:
+          type: array
+          readOnly: true
+          items: { $ref: "#/components/schemas/Inbound" }
+        outbounds:
+          type: array
+          readOnly: true
+          items: { $ref: "#/components/schemas/Outbound" }
+        endpoints:
+          type: array
+          readOnly: true
+          description: The WireGuard outbounds, written the way the core takes an endpoint.
+          items: { $ref: "#/components/schemas/Outbound" }
+        services: { type: array, items: { type: object, additionalProperties: true } }
+        route: { type: object, additionalProperties: true }
+        experimental: { type: object, additionalProperties: true }
+
+    Snapshot:
+      type: object
+      description: |
+        Everything the panel renders. When `changed` is false only `lu`,
+        `onlines` and `maintenance` are present.
+      properties:
+        lu:
+          type: integer
+          format: int64
+          description: The cursor this snapshot was taken at. Send it back on the next poll.
+        changed: { type: boolean }
+        maintenance: { type: boolean, description: Returned on every poll, changed or not. }
+        onlines: { $ref: "#/components/schemas/Onlines" }
+        clients:
+          type: array
+          items: { $ref: "#/components/schemas/Client" }
+          description: Capped; past the cap use the paged /clients listing.
+        inbounds: { type: array, items: { $ref: "#/components/schemas/Inbound" } }
+        outbounds: { type: array, items: { $ref: "#/components/schemas/Outbound" } }
+        settings: { type: object, additionalProperties: { type: string } }
+        config: { $ref: "#/components/schemas/CoreConfig" }
+
+    Keypair:
+      type: object
+      properties:
+        kind: { type: string, enum: [reality, wireguard, tls, openvpn] }
+        privateKey: { type: string, description: The half that stays on the server. Absent when an existing one was supplied. }
+        publicKey: { type: string, description: The half that goes to subscribers. }
+        certificate: { type: string, description: PEM, for the tls kind. }
+        secret: { type: string, description: A single shared value, for the openvpn kind. }
+        note: { type: string, description: Anything an operator has to know to use it. }
+
+    CertificateProbe:
+      type: object
+      properties:
+        domain: { type: string }
+        port: { type: integer }
+        subject: { type: string }
+        issuer: { type: string }
+        dnsNames: { type: array, items: { type: string } }
+        notBefore: { type: integer, format: int64 }
+        notAfter: { type: integer, format: int64 }
+        daysRemaining: { type: integer, format: int64, description: Negative once it has expired. }
+        sha256: { type: string, description: The fingerprint a client would pin against. }
+        selfSigned: { type: boolean, description: The difference between "needs skip-verify" and "the chain is wrong". }
+        tlsVersion: { type: string }
+        alpn: { type: string }
+
+    TrafficReport:
+      type: object
+      required: [resource, tag]
+      properties:
+        resource: { type: string, enum: [inbound, outbound, client] }
+        tag: { type: string, description: The subscriber's name, or the listener's tag. }
+        up: { type: integer, format: int64, minimum: 0 }
+        down: { type: integer, format: int64, minimum: 0 }
+
+    Series:
+      type: object
+      properties:
+        stats:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: integer, format: int64 }
+          description: Bucket index to [up, down].
+        startTime: { type: integer, format: int64 }
+        bucketSpan: { type: integer, format: int64, description: Seconds per bucket. }
+        numBuckets: { type: integer }
+
+    Onlines:
+      type: object
+      properties:
+        inbound: { type: array, items: { type: string } }
+        outbound: { type: array, items: { type: string } }
+        client: { type: array, items: { type: string } }
+
+    Change:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        dateTime: { type: integer, format: int64 }
+        actor: { type: string, description: An operator's username, or the name of the job that made the change. }
+        key: { type: string }
+        action: { type: string }
+        obj: { type: object, additionalProperties: true }
+
+security:
+  - session: []
+  - token: []

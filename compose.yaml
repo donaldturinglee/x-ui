@@ -1,0 +1,43 @@
+# Development dependencies: the database, and nothing else. The binaries run
+# from source with `scripts/run.sh api` and `scripts/run.sh worker`, so what a
+# fresh checkout is missing is a PostgreSQL to point them at -- not a copy of
+# itself in a container.
+#
+# The name Docker picks up on its own, so neither call has to name the file:
+#
+#   docker compose up -d
+#   docker compose down
+#
+# Add -v to that second command to throw the data away as well.
+
+name: x-ui
+
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      # The user and database name configs/config.yaml already expects. The
+      # password is the one thing that file does not carry, so scripts/migrate.sh
+      # and scripts/run.sh want X_UI_DATABASE_PASSWORD set to this.
+      POSTGRES_USER: x_ui
+      POSTGRES_PASSWORD: x_ui
+      POSTGRES_DB: x_ui
+    ports:
+      # Loopback rather than every interface. The password is a few lines up in
+      # a file that is in the repository, and the difference between the two is
+      # whether that matters on the next network the laptop joins.
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # The cluster is initialised before the server starts listening, so
+      # scripts/migrate.sh run straight after `up -d` would otherwise race it.
+      test: ["CMD-SHELL", "pg_isready -U x_ui -d x_ui"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:

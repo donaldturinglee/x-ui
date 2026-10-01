@@ -1,0 +1,31 @@
+[Unit]
+Description=x-ui worker
+# After the database when it is on this host, so a boot does not start the
+# worker against a server still coming up. Elsewhere, there is no such unit and
+# this waits for nothing.
+After=network.target postgresql.service
+Wants=network.target
+
+[Service]
+Type=simple
+# The configuration is configs/config.yaml below it, as install.sh wrote it. The
+# API and x-ui-cli read the same file, so the three never disagree about
+# which database they mean.
+WorkingDirectory=/usr/local/x-ui/
+ExecStart=/usr/local/x-ui/bin/x-ui-worker
+Restart=on-failure
+RestartSec=10s
+
+# Nothing the worker runs needs to gain privileges it was not started with.
+NoNewPrivileges=true
+
+# Its own /tmp. The worker writes nothing there, and has no reason to see what
+# anything else on the host does.
+PrivateTmp=true
+
+# true, unlike the API's read-only: the worker serves no certificate, and reads
+# nothing under /root or /home.
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
