@@ -1,0 +1,55 @@
+.DS_Store
+dist/
+release/
+backup/
+bin/
+tmp
+*.tar.gz
+
+# Frontend: dependencies, the built panel, and test output
+node_modules/
+web/build/
+playwright-report/
+test-results/
+blob-report/
+.vite/
+*.tsbuildinfo
+
+# Local environment files; retain shared frontend settings and examples
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!/web/.env.development
+!/web/.env.production
+agent.env
+
+# Database and panel backups, including private connection metadata
+*.dump
+*.connection.json
+*.backup.json
+
+# Temporary files created by the node and database commands
+.x-ui-node-*
+.x-ui-check-*.json
+.x-ui-database-restore-*.sql
+
+# Log files
+*.log*
+.cache
+
+# Windows build artifacts
+*.exe
+*.zip
+
+# Test and coverage output
+*.test
+coverage/
+coverage.out
+coverage.html
+
+# Editor directories and files
+.idea
+.vscode
