@@ -7,5 +7,5 @@ func coreMonotonicMicro() int64 {
 	if unix.ClockGettime(unix.CLOCK_MONOTONIC, &timestamp) != nil {
 		return 0
 	}
-	return timestamp.Sec*1_000_000 + timestamp.Nsec/1_000
+	return int64(timestamp.Sec)*1_000_000 + int64(timestamp.Nsec)/1_000
 }
