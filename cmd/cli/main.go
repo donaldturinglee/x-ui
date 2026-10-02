@@ -66,6 +66,10 @@ func run(args []string) error {
 		return tokenCommand(rest)
 	case "node":
 		return nodeCommand(rest)
+	case "panel-restart":
+		return panelRestartCommand(rest)
+	case "core-restart":
+		return coreRestartCommand(rest)
 	case "database":
 		return databaseCommand(rest)
 	case "migrate":
@@ -90,6 +94,8 @@ func usage() {
 	fmt.Println("    seed           create the root account when the panel has none")
 	fmt.Println("    token          create an API token for an operator (restart a running API to load it)")
 	fmt.Println("    node           configure or check the local node and native statistics")
+	fmt.Println("    panel-restart  execute a queued Panel restart task (service manager only)")
+	fmt.Println("    core-restart   execute a queued local sing-box restart task (service manager only)")
 	fmt.Println("    database       check backup tools, back up or restore the complete database")
 	fmt.Println("    migrate        apply, roll back or inspect database migrations")
 	fmt.Println("    setting        show or reset runtime settings")
@@ -547,7 +553,7 @@ func probe(ctx context.Context, server config.ServerConfig) error {
 		// connect to.
 		host = "127.0.0.1"
 	}
-	url := fmt.Sprintf("%s://%s%shealthz", scheme, net.JoinHostPort(strings.Trim(host, "[]"), fmt.Sprint(server.Port)), server.Base())
+	url := fmt.Sprintf("%s://%s/healthz", scheme, net.JoinHostPort(strings.Trim(host, "[]"), fmt.Sprint(server.Port)))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

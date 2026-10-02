@@ -1,166 +1,336 @@
-import { InlineMessage, Text } from "@gamecrafters/base-ui/react";
-import { useId } from "react";
+import { Button, InlineMessage, Text } from "@gamecrafters/base-ui/react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { FilledTextInput } from "@/components/FilledField";
+import { FilledSelect, FilledTextInput } from "@/components/FilledField";
 
-import { inUnits, useStartupSettings } from "../api";
+import { useStartupSettings } from "../api";
+import {
+    fromPanelSettings,
+    isPanelRestartActive,
+    panelAccessUrl,
+    PANEL_LOG_LEVELS,
+    panelSettingsRequest,
+    usePanelSettings,
+    useSavePanelSettings,
+    useRestartPanelSettings,
+    usePanelRestartJob,
+    type PanelForm,
+    type PanelRestartJob,
+} from "../api/panel";
 
-import { FIELDS } from "./layout";
+import { FIELDS, FOOTER, PLAIN_BUTTON, SAVE_BUTTON } from "./layout";
+import { PanelRestartDialog } from "./PanelRestartDialog";
+import { RequestError } from "@/lib/request";
 
-// A schedule left empty or written as "off" is a job the worker does not run,
-// which is said rather than left as a blank for an operator to guess at.
-const scheduleOf = (spec: string) => (spec === "" || spec === "off" ? "Off" : spec);
+const PANEL_FIELDS: { key: keyof PanelForm; label: string; numeric?: boolean; min?: number }[] = [
+    { key: "listen", label: "Address" },
+    { key: "port", label: "Port", numeric: true, min: 1 },
+    { key: "basePath", label: "Web path" },
+    { key: "domain", label: "Domain" },
+    { key: "keyFile", label: "SSL key path" },
+    { key: "certFile", label: "SSL certificate path" },
+    { key: "maxAgeSeconds", label: "Session length (minutes)", numeric: true, min: 0 },
+    { key: "statsRetentionSeconds", label: "Traffic kept for (days)", numeric: true, min: 0 },
+    { key: "statsBucketSeconds", label: "Traffic bucket (seconds)", numeric: true, min: 1 },
+    { key: "timeLocation", label: "Time zone" },
+    { key: "resetSpec", label: "Global traffic reset" },
+    { key: "depleteSpec", label: "Quota enforcement" },
+    { key: "cleanupSpec", label: "Retention cleanup" },
+    { key: "trustedProxies", label: "Trusted proxies" },
+    { key: "logLevel", label: "Log level" },
+];
 
-// The panel's own listener, its sessions and the worker's schedules, as the
-// process read them from configs/config.yaml and the X_UI_* environment
-// when it started: the reference's interface tab, in its order and three to a
-// row.
-//
-// They are shown rather than changed. Everything the process needs in order to
-// start comes from that file, which an operator may have no way to edit from
-// here, and a panel that rewrote its own port could leave itself unreachable --
-// the file is the one place that can always be put right. So there is nothing
-// to save, and the reference's restart is not offered: the process is
-// restarted by whatever runs it.
+const EMPTY_FORM: PanelForm = {
+    listen: "",
+    port: "",
+    basePath: "/",
+    domain: "",
+    keyFile: "",
+    certFile: "",
+    trustedProxies: "",
+    maxAgeSeconds: "0",
+    statsRetentionSeconds: "30",
+    statsBucketSeconds: "60",
+    timeLocation: "UTC",
+    resetSpec: "",
+    depleteSpec: "@every 1m",
+    cleanupSpec: "@daily",
+    logLevel: "info",
+};
+
 export const PanelTab = () => {
-    const listenId = useId();
-    const portId = useId();
-    const pathId = useId();
-    const domainId = useId();
-    const keyId = useId();
-    const certificateId = useId();
-    const proxiesId = useId();
-    const sessionId = useId();
-    const retentionId = useId();
-    const bucketId = useId();
-    const zoneId = useId();
-    const resetId = useId();
-    const depleteId = useId();
-    const cleanupId = useId();
-    const logId = useId();
+    const id = useId();
+    const { data, error: readError, isLoading, mutate: refresh } = usePanelSettings();
+    const { data: startup } = useStartupSettings();
+    const {
+        trigger: save,
+        isMutating: isSaving,
+        error: saveError,
+        reset: resetSave,
+    } = useSavePanelSettings();
+    // Capture the revision at the first edit. Refreshes cannot silently rebase
+    // the draft over another operator's save.
+    const [draft, setDraft] = useState<{ values: PanelForm; revision: string } | null>(null);
+    const [savedMessage, setSavedMessage] = useState(false);
+    const [confirmRestart, setConfirmRestart] = useState(false);
+    const [submittedJob, setSubmittedJob] = useState<PanelRestartJob | null>(null);
+    const [timedOutJob, setTimedOutJob] = useState<string | null>(null);
+    const restartButton = useRef<HTMLButtonElement>(null);
+    const {
+        trigger: restart,
+        isMutating: isScheduling,
+        error: restartError,
+    } = useRestartPanelSettings();
+    const followedJob =
+        submittedJob &&
+        (!data?.restartJob ||
+            Date.parse(submittedJob.requestedAt) > Date.parse(data.restartJob.requestedAt))
+            ? submittedJob
+            : data?.restartJob;
+    const { data: polledJob, error: reconnectError } = usePanelRestartJob(followedJob?.id, () => {
+        void refresh();
+    });
+    const job = polledJob ?? followedJob;
+    const isRestarting = isScheduling || isPanelRestartActive(job);
+    const targetUrl = data
+        ? panelAccessUrl(data.saved, data.running, window.location.href)
+        : window.location.href;
+    const jobUrl = job ? panelAccessUrl(job.values, job.previous, window.location.href) : targetUrl;
+    const addressChanged = targetUrl !== window.location.href;
+    const connectionTimedOut = Boolean(job && reconnectError && timedOutJob === job.id);
+    useEffect(() => {
+        if (!job || !isPanelRestartActive(job)) return;
+        const timer = window.setTimeout(
+            () => setTimedOutJob(job.id),
+            Math.max(0, Date.parse(job.requestedAt) + 180000 - Date.now()),
+        );
+        return () => window.clearTimeout(timer);
+    }, [job]);
 
-    const { data: startup, error } = useStartupSettings();
-    const panel = startup?.panel;
-    const session = startup?.session;
-    const worker = startup?.worker;
+    const saved = data ? fromPanelSettings(data.saved) : EMPTY_FORM;
+    const values = draft?.values ?? saved;
+    const isChanged = draft !== null && JSON.stringify(values) !== JSON.stringify(saved);
+    const checked = panelSettingsRequest.safeParse(values);
+    const disabled = isLoading || !data || isSaving || isRestarting;
+
+    const change = (key: keyof PanelForm, value: string) => {
+        if (data) {
+            setDraft({
+                values: { ...values, [key]: value },
+                revision: draft?.revision ?? data.revision,
+            });
+            setSavedMessage(false);
+            resetSave();
+        }
+    };
+
+    const onSave = async (event: FormEvent) => {
+        event.preventDefault();
+        if (disabled || !isChanged) return;
+        if (
+            draft &&
+            checked.success &&
+            (await save({ revision: draft.revision, values: checked.data }))
+        ) {
+            setDraft(null);
+            setSavedMessage(true);
+        }
+    };
+
+    const onRestart = async () => {
+        setConfirmRestart(false);
+        if (!data || disabled || isChanged || !data.restartRequired) return;
+        const accepted = await restart({ revision: data.revision });
+        if (accepted) setSubmittedJob(accepted);
+        void refresh();
+    };
 
     return (
-        <div className="p-4">
-            <Text
-                as="p"
-                className="mb-4 text-[14px] leading-5 text-[var(--foreground-color-muted)]"
-            >
-                Read from configs/config.yaml and the X_UI_* environment when the panel started. To
-                change one, change it there and restart the panel and the worker.
-            </Text>
-
-            {error && (
-                <InlineMessage variant="critical" className="mb-4">
-                    {error.message}
-                </InlineMessage>
-            )}
-
-            {/* A secret made at start is one no other start knows, so every
-                operator is signed out whenever the panel restarts. */}
-            {session && !session.secretSet && (
-                <InlineMessage variant="warning" className="mb-4">
-                    No session secret is configured, so one is made at every start and every session
-                    ends when the panel restarts.
-                </InlineMessage>
-            )}
-
-            <div className={FIELDS}>
-                <FilledTextInput
-                    id={listenId}
-                    label="Address"
-                    readOnly
-                    value={panel?.listen ?? ""}
-                />
-                <FilledTextInput
-                    id={portId}
-                    label="Port"
-                    readOnly
-                    value={panel ? String(panel.port) : ""}
-                />
-                <FilledTextInput
-                    id={pathId}
-                    label="Web path"
-                    readOnly
-                    value={panel?.basePath ?? ""}
-                />
-                <FilledTextInput
-                    id={domainId}
-                    label="Domain"
-                    readOnly
-                    value={panel?.domain ?? ""}
-                />
-                <FilledTextInput
-                    id={keyId}
-                    label="SSL key path"
-                    readOnly
-                    value={panel?.keyFile ?? ""}
-                />
-                <FilledTextInput
-                    id={certificateId}
-                    label="SSL certificate path"
-                    readOnly
-                    value={panel?.certFile ?? ""}
-                />
-                <FilledTextInput
-                    id={sessionId}
-                    label="Session length (minutes)"
-                    readOnly
-                    value={session ? inUnits(session.maxAgeSeconds, 60) : ""}
-                />
-                <FilledTextInput
-                    id={retentionId}
-                    label="Traffic kept for (days)"
-                    readOnly
-                    value={worker ? inUnits(worker.statsRetentionSeconds, 86_400) : ""}
-                />
-                <FilledTextInput
-                    id={bucketId}
-                    label="Traffic bucket (seconds)"
-                    readOnly
-                    value={worker ? String(worker.statsBucketSeconds) : ""}
-                />
-                <FilledTextInput
-                    id={zoneId}
-                    label="Time zone"
-                    readOnly
-                    value={worker?.timeLocation ?? ""}
-                />
-                <FilledTextInput
-                    id={resetId}
-                    label="Global traffic reset"
-                    readOnly
-                    value={worker ? scheduleOf(worker.resetSpec) : ""}
-                />
-                <FilledTextInput
-                    id={depleteId}
-                    label="Quota enforcement"
-                    readOnly
-                    value={worker ? scheduleOf(worker.depleteSpec) : ""}
-                />
-                <FilledTextInput
-                    id={cleanupId}
-                    label="Retention cleanup"
-                    readOnly
-                    value={worker ? scheduleOf(worker.cleanupSpec) : ""}
-                />
-                <FilledTextInput
-                    id={proxiesId}
-                    label="Trusted proxies"
-                    readOnly
-                    value={panel ? panel.trustedProxies.join(", ") || "None" : ""}
-                />
-                <FilledTextInput
-                    id={logId}
-                    label="Log level"
-                    readOnly
-                    value={startup?.logLevel ?? ""}
-                />
+        <form aria-label="Panel" onSubmit={(event) => void onSave(event)} noValidate>
+            <div className="p-4">
+                <Text
+                    as="p"
+                    className="mb-4 text-[14px] leading-5 text-[var(--foreground-color-muted)]"
+                >
+                    Save changes, then choose Restart &amp; Apply to apply them. Changing the
+                    address, port, Web path, domain or SSL settings may change where you sign in.
+                </Text>
+                {readError && !isRestarting && (
+                    <InlineMessage variant="critical" className="mb-4">
+                        {readError.message}
+                    </InlineMessage>
+                )}
+                {data?.restartRequired && (
+                    <InlineMessage variant="warning" className="mb-4">
+                        Changes are saved and waiting for a restart. Choose Restart &amp; Apply when
+                        you are ready to apply them.
+                    </InlineMessage>
+                )}
+                {savedMessage && !data?.restartRequired && (
+                    <InlineMessage className="mb-4">Settings saved.</InlineMessage>
+                )}
+                {data?.restartRequired && !data.restartSupported && (
+                    <InlineMessage variant="warning" className="mb-4">
+                        {data.restartUnavailableReason ??
+                            "Automatic restart is unavailable in this environment. Use x-ui restart on the server."}
+                    </InlineMessage>
+                )}
+                {job && (job.state !== "succeeded" || !data?.restartRequired) && (
+                    <InlineMessage
+                        variant={
+                            job.state === "failed" ||
+                            job.state === "rolled_back" ||
+                            connectionTimedOut
+                                ? "warning"
+                                : undefined
+                        }
+                        className="mb-4"
+                    >
+                        {job.state === "queued" &&
+                            "Restart scheduled. Waiting for the panel to restart."}
+                        {job.state === "running" && "Restarting the panel and reconnecting…"}
+                        {job.state === "rolling_back" &&
+                            "Restoring the previous configuration and reconnecting…"}
+                        {job.state === "succeeded" &&
+                            !data?.restartRequired &&
+                            "Panel restarted. Saved settings are now applied."}
+                        {(job.state === "failed" || job.state === "rolled_back") && job.error}
+                        {connectionTimedOut &&
+                            " Unable to reconnect. The server's restart result has not been confirmed."}
+                        {reconnectError instanceof RequestError &&
+                            reconnectError.status === 401 &&
+                            " Sign in again to check the restart result."}
+                        {isPanelRestartActive(job) && jobUrl !== window.location.href && (
+                            <p className="mt-2">
+                                <a href={jobUrl} className="break-all underline">
+                                    Open updated panel: {jobUrl}
+                                </a>
+                            </p>
+                        )}
+                    </InlineMessage>
+                )}
+                {restartError && (
+                    <InlineMessage variant="critical" className="mb-4">
+                        {restartError.message}
+                    </InlineMessage>
+                )}
+                {startup && !startup.session.secretSet && (
+                    <InlineMessage variant="warning" className="mb-4">
+                        No session secret is configured, so one is made at every start and every
+                        session ends when the panel restarts.
+                    </InlineMessage>
+                )}
+                <div className={FIELDS}>
+                    {PANEL_FIELDS.map((field) => {
+                        const override = data?.overrides[field.key];
+                        const fieldError = checked.success
+                            ? undefined
+                            : checked.error.issues.find((issue) => issue.path[0] === field.key)
+                                  ?.message;
+                        return field.key === "logLevel" ? (
+                            <FilledSelect
+                                key={field.key}
+                                id={`${id}-${field.key}`}
+                                label={field.label}
+                                disabled={disabled || Boolean(override)}
+                                title={override ? `Controlled by ${override}` : undefined}
+                                value={values[field.key]}
+                                onChange={(event) => change(field.key, event.target.value)}
+                            >
+                                {PANEL_LOG_LEVELS.map((level) => (
+                                    <option key={level} value={level}>
+                                        {level}
+                                    </option>
+                                ))}
+                            </FilledSelect>
+                        ) : (
+                            <FilledTextInput
+                                key={field.key}
+                                id={`${id}-${field.key}`}
+                                label={field.label}
+                                type={field.numeric ? "number" : "text"}
+                                inputMode={field.numeric ? "decimal" : undefined}
+                                min={field.min}
+                                step={field.numeric ? "any" : undefined}
+                                disabled={disabled || Boolean(override)}
+                                title={override ? `Controlled by ${override}` : undefined}
+                                value={values[field.key]}
+                                validation={draft ? fieldError : undefined}
+                                onChange={(event) => change(field.key, event.target.value)}
+                            />
+                        );
+                    })}
+                </div>
+                <Text
+                    as="p"
+                    className="mt-4 text-[12px] leading-5 text-[var(--foreground-color-muted)]"
+                >
+                    Leave a schedule empty or enter Off to disable it. Separate trusted proxy IP
+                    addresses or CIDR ranges with commas. A session length of 0 lasts until the
+                    browser closes; traffic retention of 0 keeps no history.
+                </Text>
+                {data && Object.keys(data.overrides).length > 0 && (
+                    <InlineMessage className="mt-4">
+                        These fields are controlled by environment variables:{" "}
+                        {PANEL_FIELDS.filter(({ key }) => data.overrides[key])
+                            .map(({ key, label }) => `${label} (${data.overrides[key]})`)
+                            .join(", ")}
+                        .
+                    </InlineMessage>
+                )}
+                {saveError && (
+                    <InlineMessage variant="critical" className="mt-4">
+                        {saveError.message}
+                    </InlineMessage>
+                )}
             </div>
-        </div>
+            <div className={FOOTER}>
+                <Button
+                    type="button"
+                    disabled={!draft || isSaving || isRestarting}
+                    className={PLAIN_BUTTON}
+                    onClick={() => {
+                        setDraft(null);
+                        setSavedMessage(false);
+                        resetSave();
+                        void refresh();
+                    }}
+                >
+                    Discard changes
+                </Button>
+                <Button
+                    ref={restartButton}
+                    type="button"
+                    loading={isRestarting}
+                    disabled={
+                        disabled || isChanged || !data?.restartRequired || !data.restartSupported
+                    }
+                    className={PLAIN_BUTTON}
+                    onClick={() => setConfirmRestart(true)}
+                >
+                    Restart &amp; Apply
+                </Button>
+                <Button
+                    type="submit"
+                    variant="primary"
+                    loading={isSaving}
+                    disabled={disabled || !isChanged || !checked.success}
+                    className={SAVE_BUTTON}
+                >
+                    Save
+                </Button>
+            </div>
+            {confirmRestart && (
+                <PanelRestartDialog
+                    targetUrl={targetUrl}
+                    addressChanged={addressChanged}
+                    onClose={() => setConfirmRestart(false)}
+                    onConfirm={() => {
+                        void onRestart();
+                    }}
+                    returnFocusRef={restartButton}
+                />
+            )}
+        </form>
     );
 };

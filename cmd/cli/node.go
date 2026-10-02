@@ -37,12 +37,23 @@ func nodeCommand(args []string) error {
 	fs := flag.NewFlagSet("node", flag.ContinueOnError)
 	setup := fs.Bool("setup", false, "configure the local agent and native statistics API")
 	check := fs.Bool("check", false, "verify configuration sync and authenticated statistics reading")
+	checkPanel := fs.Bool("check-panel", false, "verify the authenticated panel connection")
+	refresh := fs.Bool("refresh-panel", false, "refresh only the locally managed panel connection")
 	directory := fs.String("directory", "/etc/x-ui", "private node configuration directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *setup == *check || len(fs.Args()) != 0 {
-		return errors.New("usage: x-ui-cli node -setup|-check [-directory path]")
+	selected := 0
+	for _, value := range []bool{*setup, *check, *checkPanel, *refresh} {
+		if value {
+			selected++
+		}
+	}
+	if selected != 1 || len(fs.Args()) != 0 {
+		return errors.New("usage: x-ui-cli node -setup|-check|-check-panel|-refresh-panel [-directory path]")
+	}
+	if *checkPanel {
+		return checkNodePanel(*directory)
 	}
 	if *check {
 		return checkNode(*directory)
@@ -51,6 +62,9 @@ func nodeCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *refresh {
+		return refreshNodePanel(*directory, panel)
+	}
 	return withStore(func(ctx context.Context, store *repository.Store) error {
 		if err := setupNode(ctx, store, panel, *directory); err != nil {
 			return err
@@ -58,6 +72,95 @@ func nodeCommand(args []string) error {
 		fmt.Println("local node configuration and native statistics API ready")
 		return nil
 	})
+}
+
+// Refreshing a Panel listener must not initialize statistics, rewrite the core
+// configuration or rotate the existing agent token.
+func refreshNodePanel(directory string, panel *config.Config) error {
+	for _, name := range []string{"agent.yaml", "agent.env", "install-state.json"} {
+		info, err := os.Lstat(filepath.Join(directory, name))
+		if name == "install-state.json" && os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Local agent configuration must be regular files")
+		}
+	}
+	environment, err := readNodeEnvironment(filepath.Join(directory, "agent.env"))
+	if err != nil {
+		return err
+	}
+	content, err := os.ReadFile(filepath.Join(directory, "agent.yaml"))
+	if err != nil {
+		return err
+	}
+	var document map[string]interface{}
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return err
+	}
+	section, ok := document["panel"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("The local agent has no panel connection")
+	}
+	current, _ := section["url"].(string)
+	if environment["X_UI_AGENT_PANEL_URL"] != "" {
+		current = environment["X_UI_AGENT_PANEL_URL"]
+	}
+	parsed, err := url.Parse(current)
+	var installed nodeInstallState
+	stateData, stateErr := os.ReadFile(filepath.Join(directory, "install-state.json"))
+	if stateErr != nil && !os.IsNotExist(stateErr) {
+		return stateErr
+	}
+	if stateErr == nil {
+		if err := json.Unmarshal(stateData, &installed); err != nil {
+			return err
+		}
+	}
+	if err != nil || current != installed.PanelURL && !loopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("The agent targets a remote panel; its connection was preserved")
+	}
+	host := panel.Server.Listen
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	scheme := "http"
+	if panel.Server.TLSEnabled() {
+		scheme = "https"
+	}
+	updatedURL := scheme + "://" + net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(panel.Server.Port)) + panel.Server.Base() + "apiv2"
+	section["url"], section["host"] = updatedURL, panel.Server.Domain
+	section["insecure_skip_verify"] = panel.Server.TLSEnabled() && panel.Server.Domain == "" && loopbackHost(host)
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		return err
+	}
+	envPath := filepath.Join(directory, "agent.env")
+	content, err = os.ReadFile(envPath)
+	if err != nil {
+		return err
+	}
+	lines := []string{}
+	for _, line := range strings.Split(string(content), "\n") {
+		key, _, _ := strings.Cut(strings.TrimSpace(line), "=")
+		if key != "X_UI_AGENT_PANEL_URL" && key != "X_UI_AGENT_PANEL_HOST" && key != "X_UI_AGENT_PANEL_INSECURE_SKIP_VERIFY" {
+			lines = append(lines, line)
+		}
+	}
+	state, err := json.Marshal(nodeInstallState{PanelURL: updatedURL, PanelHost: panel.Server.Domain})
+	if err != nil {
+		return err
+	}
+	if err := writePrivateNodeFile(filepath.Join(directory, "agent.yaml"), encoded); err != nil {
+		return err
+	}
+	if err := writePrivateNodeFile(envPath, []byte(strings.Join(lines, "\n"))); err != nil {
+		return err
+	}
+	return writePrivateNodeFile(filepath.Join(directory, "install-state.json"), state)
 }
 
 func setupNode(ctx context.Context, store *repository.Store, panel *config.Config, directory string) error {
@@ -385,5 +488,29 @@ func checkNode(directory string) error {
 		return fmt.Errorf("native statistics check: %w", err)
 	}
 	fmt.Println("configuration sync and authenticated statistics reading passed")
+	return nil
+}
+
+// Applying Panel settings only needs to verify the existing agent's panel
+// connection. Legacy agents may omit applied_config_path; checking or changing
+// their native statistics and core configuration belongs to node -check/setup.
+func checkNodePanel(directory string) error {
+	environment, err := readNodeEnvironment(filepath.Join(directory, "agent.env"))
+	if err != nil {
+		return err
+	}
+	cfg, err := agent.LoadWithEnvironment(filepath.Join(directory, "agent.yaml"), environment)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := agent.NewPanelClient(cfg.Panel).FetchConfig(ctx); err != nil {
+		return err
+	}
+	fmt.Println("authenticated panel connection passed")
 	return nil
 }

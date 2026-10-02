@@ -216,8 +216,8 @@ export const useSendTelegramTest = () => {
 };
 
 // What the process read from configs/config.yaml and the environment when it
-// started. Nothing in it is changed from the panel -- a panel that rewrote its
-// own listener could leave itself unreachable -- and nothing secret is in it.
+// started. Pending Panel settings are read and saved separately; nothing secret
+// is in this running snapshot.
 // Durations are whole seconds.
 export interface StartupListener {
     listen: string;

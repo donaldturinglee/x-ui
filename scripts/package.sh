@@ -72,6 +72,8 @@ for platform in "${PLATFORMS[@]}"; do
 
   # The ARM archives differ in GOARM alone: the instruction set the oldest board
   # they run on understands.
+  # The CLI includes the independent Panel restart task runner; it must be
+  # shipped with the API and worker for Restart & Apply to be available.
   goarch="${platform}"
   goarm=""
   case "${platform}" in

@@ -491,9 +491,7 @@ ask_path() {
 set_setting() {
   local before
   before="$(cat "${CONFIG_FILE}" 2>/dev/null)"
-  # No panel path. The panel is built to be served from the root, /, and loads
-  # its scripts from there, so anywhere else it would be a page that never
-  # draws.
+  # The panel path is also editable through Settings -> Panel.
   ask_port "panel port" server.port 8000 subscription.port 8443
   ask_port "subscription port" subscription.port 8443 server.port 8000
   ask_path "subscription path" subscription.base_path /sub/
@@ -560,11 +558,14 @@ public_address() {
 # the end of an install: this host's own, and the one the internet reaches it
 # by -- which on most cloud hosts is on none of its interfaces.
 show_uri() {
-  local port domain listen scheme="http" suffix addresses address public
+  local port domain listen scheme="http" suffix addresses address public panel_path
   port="$(config_value server.port)"
   port="${port:-8000}"
   domain="$(config_value server.domain)"
   listen="$(config_value server.listen)"
+  panel_path="$(config_value server.base_path)"
+  panel_path="/${panel_path#/}"
+  [[ "${panel_path}" == */ ]] || panel_path="${panel_path}/"
   if [[ -n "$(config_value server.cert_file)" ]]; then
     scheme="https"
   fi
@@ -574,7 +575,7 @@ show_uri() {
   fi
 
   if [[ -n "${domain}" || -n "${listen}" ]]; then
-    echo -e "${green}${scheme}://${domain:-${listen}}${suffix}/${plain}"
+    echo -e "${green}${scheme}://${domain:-${listen}}${suffix}${panel_path}${plain}"
     return 0
   fi
   addresses="$(local_addresses)"
@@ -584,7 +585,7 @@ show_uri() {
       if [[ "${address}" == *:* ]]; then
         address="[${address}]"
       fi
-      echo -e "${green}${scheme}://${address}${suffix}/${plain}"
+      echo -e "${green}${scheme}://${address}${suffix}${panel_path}${plain}"
     done
   fi
   public="$(public_address)"
@@ -596,7 +597,7 @@ show_uri() {
       echo
     fi
     echo -e "Global address:"
-    echo -e "${green}${scheme}://${public}${suffix}/${plain}"
+    echo -e "${green}${scheme}://${public}${suffix}${panel_path}${plain}"
   fi
 }
 

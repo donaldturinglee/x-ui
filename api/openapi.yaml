@@ -1109,7 +1109,8 @@ paths:
       description: |
         Only the options an operator may change, every value a string whatever
         it stands for. Anything needed to start the process comes from the
-        configuration files, and `/settings/startup` shows it.
+        configuration files. `/settings/startup` shows the running snapshot;
+        `/settings/panel` reads and saves the editable startup options.
 
         | Key | Default | |
         |---|---|---|
@@ -1203,10 +1204,9 @@ paths:
       summary: The configuration the process started with
       description: |
         What was read from `configs/config.yaml` and the `X_UI_*`
-        environment at startup, which takes effect at the next one. It is shown
-        rather than written: a panel that rewrote its own listener could leave
-        itself unreachable, and the file is the one place an operator can
-        always put right. Nothing secret is in it.
+        environment at startup. Pending Panel changes are read and saved
+        separately through `/settings/panel`; this running snapshot is not
+        changed by a save. Nothing secret is in it.
       responses:
         "200":
           description: The startup configuration
@@ -1218,6 +1218,117 @@ paths:
                   - type: object
                     properties:
                       obj: { $ref: "#/components/schemas/StartupSettings" }
+
+  /api/settings/panel:
+    get:
+      tags: [settings]
+      summary: Read saved Panel settings and the API startup snapshot
+      responses:
+        "200":
+          description: Editable settings, file revision, environment overrides and restart status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelSettingsState" }
+    post:
+      tags: [settings]
+      summary: Save Panel settings to config.yaml for the next restart
+      description: |
+        Send the full typed form and the revision read before editing. Unknown
+        fields and changes to environment-controlled fields are refused. The
+        candidate is validated before atomically replacing the file, preserving
+        other options, comments and file permissions. Restart the API and worker
+        to apply it; this operation does not restart either service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, values]
+              properties:
+                revision: { type: string }
+                values: { $ref: "#/components/schemas/PanelSettings" }
+      responses:
+        "200":
+          description: Saved settings and restart status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelSettingsState" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/settings/panel/restart:
+    post:
+      tags: [settings]
+      summary: Restart the panel to apply the saved configuration
+      description: |
+        Available for the systemd-managed installation. Saving is separate.
+        The task survives API replacement, checks API/worker readiness and
+        updates a locally managed agent connection if needed. The proxy core
+        is kept running. Failed changes recover the previous Panel settings.
+        Repeating a request for the same in-progress revision returns its task.
+        Configuration saves are rejected while a task is in progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { type: string, minLength: 64, maxLength: 64 }
+      responses:
+        "202":
+          description: Restart task accepted, not yet applied
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/settings/panel/restart/{id}:
+    get:
+      tags: [settings]
+      summary: Read the persisted Panel restart task result
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}$" }
+      responses:
+        "200":
+          description: Current restart progress or terminal result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
 
   /api/telegram/test:
     post:
@@ -1271,6 +1382,105 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+
+  /api/core:
+    get:
+      tags: [system]
+      summary: Read the local sing-box service state and restart capability
+      description: Actual systemd process state, independent of maintenance. Does not describe remote nodes.
+      responses:
+        "200":
+          description: Local status and the most recent restart task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreStatus" }
+
+  /api/core/restart:
+    post:
+      tags: [system]
+      summary: Queue a restart of the local sing-box service
+      description: |
+        Requires the root-managed systemd installation, a managed local agent,
+        native statistics and the updated reload helper. Validates the actual
+        service configuration under the agent's application lock before restarting.
+        Existing connections close; the panel remains available. Success requires
+        a new PID and a healthy native statistics API. A duplicate request while
+        active returns the existing task. Saved Panel settings are not applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "202":
+          description: Restart queued or existing active task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/core/restart/{id}:
+    get:
+      tags: [system]
+      summary: Follow a persisted local core restart task
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}$" }
+      responses:
+        "200":
+          description: Current progress or terminal result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "404":
+          description: Task does not exist
+
+  /api/core/logs:
+    get:
+      tags: [system]
+      summary: Read the last 80 local sing-box journal entries
+      responses:
+        "200":
+          description: Journal output capped at 64 KiB
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        properties:
+                          lines:
+                            type: array
+                            items: { type: string }
+        "400":
+          $ref: "#/components/responses/Invalid"
 
   /api/system:
     get:
@@ -1599,6 +1809,82 @@ components:
         twoFactor: { type: boolean, description: Whether signing in asks for an authenticator app's code. }
         lastSignIn: { type: string, description: "\"2006-01-02 15:04:05 <ip>\", or empty." }
         createdAt: { type: integer, format: int64, description: Unix seconds. }
+
+    CoreStatus:
+      type: object
+      required: [supported, state, pid, uptimeSeconds]
+      properties:
+        supported: { type: boolean }
+        reason: { type: string, description: Why local restart is unavailable. }
+        state: { type: string, description: Systemd ActiveState, unavailable or unknown. }
+        pid: { type: integer, minimum: 0 }
+        uptimeSeconds: { type: integer, format: int64, minimum: 0 }
+        restartJob: { $ref: "#/components/schemas/CoreRestartJob" }
+
+    CoreRestartJob:
+      type: object
+      required: [id, state, actor, requestedAt, beforePid, afterPid]
+      properties:
+        id: { type: string, pattern: "^[a-f0-9]{32}$" }
+        state: { type: string, enum: [queued, checking, restarting, verifying, succeeded, failed] }
+        actor: { type: string }
+        requestedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        beforePid: { type: integer, minimum: 0 }
+        afterPid: { type: integer, minimum: 0 }
+        error: { type: string, description: Public restart failure message. }
+
+    PanelSettings:
+      type: object
+      additionalProperties: false
+      description: Only the editable Panel options. Durations are whole seconds; no secrets are included.
+      required: [listen, port, basePath, domain, keyFile, certFile, trustedProxies, maxAgeSeconds, statsRetentionSeconds, statsBucketSeconds, timeLocation, resetSpec, depleteSpec, cleanupSpec, logLevel]
+      properties:
+        listen: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        basePath: { type: string, description: "Normalised to leading/trailing slashes. Segments use letters, numbers, - and _." }
+        domain: { type: string }
+        keyFile: { type: string }
+        certFile: { type: string }
+        trustedProxies:
+          type: array
+          items: { type: string }
+        maxAgeSeconds: { type: integer, format: int64, minimum: 0, maximum: 9223372036 }
+        statsRetentionSeconds: { type: integer, format: int64, minimum: 0, maximum: 9223372036 }
+        statsBucketSeconds: { type: integer, format: int64, minimum: 1, maximum: 9223372036 }
+        timeLocation: { type: string }
+        resetSpec: { type: string, description: "Cron, descriptors, or empty/off to disable." }
+        depleteSpec: { type: string, description: "Cron, descriptors, or empty/off to disable." }
+        cleanupSpec: { type: string, description: "Cron, descriptors, or empty/off to disable." }
+        logLevel: { type: string, enum: [debug, info, notice, warning, error, critical] }
+
+    PanelSettingsState:
+      type: object
+      properties:
+        saved: { $ref: "#/components/schemas/PanelSettings" }
+        running: { $ref: "#/components/schemas/PanelSettings" }
+        revision: { type: string, description: File revision to include in a save. }
+        overrides:
+          type: object
+          additionalProperties: { type: string }
+          description: Locked form field names mapped to their X_UI_* environment variable.
+        restartRequired: { type: boolean, description: Saved settings require application or a restart task is still running. }
+        restartSupported: { type: boolean }
+        restartUnavailableReason: { type: string }
+        restartJob: { $ref: "#/components/schemas/PanelRestartJob" }
+
+    PanelRestartJob:
+      type: object
+      properties:
+        id: { type: string, pattern: "^[a-f0-9]{32}$" }
+        state: { type: string, enum: [queued, running, rolling_back, succeeded, rolled_back, failed] }
+        revision: { type: string }
+        actor: { type: string }
+        requestedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        values: { $ref: "#/components/schemas/PanelSettings" }
+        previous: { $ref: "#/components/schemas/PanelSettings" }
+        error: { type: string, description: Public application or recovery failure message. }
 
     StartupSettings:
       type: object

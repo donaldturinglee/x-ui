@@ -11,6 +11,8 @@ import { settings } from "@/settings";
 import { useTilesStore } from "@/stores/tiles";
 
 import { useMaintenance } from "./api";
+import { isCoreRestartActive, useCoreStatus } from "./api/core";
+import { CoreInfoTile } from "./components/CoreInfoTile";
 import { BackupDialog } from "./components/BackupDialog";
 import { CountsDialog } from "./components/CountsDialog";
 import { GaugeTile } from "./components/GaugeTile";
@@ -45,6 +47,8 @@ const renderTile = (id: TileId) => {
             return <SystemInfoTile key={id} />;
         case "i-panel":
             return <PanelInfoTile key={id} />;
+        case "i-core":
+            return <CoreInfoTile key={id} />;
     }
 };
 
@@ -58,6 +62,7 @@ const renderTile = (id: TileId) => {
 export const Overview = () => {
     const tiles = useTilesStore((state) => state.tiles);
     const { data: service } = useMaintenance();
+    const { data: core } = useCoreStatus();
 
     const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
 
@@ -72,10 +77,14 @@ export const Overview = () => {
     // or not: the app bar says maintenance is on from every page and leads here,
     // and an overview with that tile switched off would have nothing to say
     // about it and no way to end it.
-    const shown =
+    const maintenanceTiles =
         service?.maintenance && !tiles.includes("i-panel")
             ? (["i-panel", ...tiles] as TileId[])
             : tiles;
+    const shown =
+        isCoreRestartActive(core?.restartJob) && !maintenanceTiles.includes("i-core")
+            ? ([...maintenanceTiles, "i-core"] as TileId[])
+            : maintenanceTiles;
 
     return (
         <div className="mx-auto w-full p-4 min-[840px]:max-w-[700px] min-[1145px]:max-w-[1000px] min-[1545px]:max-w-[1400px] min-[2138px]:max-w-[2000px]">

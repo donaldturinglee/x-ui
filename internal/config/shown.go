@@ -4,9 +4,8 @@ package config
 // process started with.
 //
 // All of it is read from configs/config.yaml and the X_UI_* environment
-// at startup and takes effect at the next one, which is why it is shown rather
-// than edited: a panel that wrote its own listener's port could leave itself
-// unreachable, and the file is the one place an operator can always put right.
+// at startup. This snapshot stays separate from the saved Panel settings so a
+// change waiting for a restart cannot be mistaken for a running listener.
 // Nothing secret is in it. The session secret is said to be set or not, and the
 // database is left out altogether.
 //

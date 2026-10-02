@@ -32,9 +32,7 @@ const jobTimeout = 5 * time.Minute
 
 // cronParser accepts standard five-field cron, an optional leading seconds
 // field, and descriptors (@daily, @every 10s, ...).
-var cronParser = cron.NewParser(
-	cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
-)
+var cronParser = config.CronParser()
 
 func main() {
 	if err := run(); err != nil {
@@ -157,6 +155,12 @@ func run() error {
 	}
 
 	scheduler.Start()
+	if err := service.RecordPanelProcess("worker", cfg); err != nil {
+		logger.Warning("unable to record Panel restart readiness: ", err)
+	}
+	if err := service.CheckpointPanelConfiguration(cfg); err != nil {
+		logger.Warning("unable to checkpoint Panel configuration: ", err)
+	}
 	logger.Info("worker running with ", len(scheduler.Entries()), " scheduled job(s)")
 
 	sigCh := make(chan os.Signal, 1)

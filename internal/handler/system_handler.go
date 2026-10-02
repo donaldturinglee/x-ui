@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -22,18 +24,72 @@ const maxBackupUpload = 256 << 20
 // somebody's certificate, and a copy of everything.
 type SystemHandler struct {
 	system *service.SystemService
+	core   *service.CoreService
 }
 
 func NewSystemHandler(system *service.SystemService) *SystemHandler {
-	return &SystemHandler{system: system}
+	return &SystemHandler{system: system, core: service.NewCoreService(system.Settings())}
 }
 
 func (h *SystemHandler) Register(g *gin.RouterGroup) {
 	g.GET("/system", h.status)
+	g.GET("/core", h.coreStatus)
+	g.POST("/core/restart", h.restartCore)
+	g.GET("/core/restart/:id", h.coreRestartJob)
+	g.GET("/core/logs", h.coreLogs)
 	g.GET("/keypairs", h.keypair)
 	g.POST("/cert-probe", h.certProbe)
 	g.GET("/backup", h.backup)
 	g.POST("/backup/restore", h.restore)
+}
+
+func (h *SystemHandler) coreStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	httputil.Data(c, h.core.Status(c.Request.Context()))
+}
+
+func (h *SystemHandler) restartCore(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	var request *struct{}
+	if err := decoder.Decode(&request); err != nil || request == nil {
+		httputil.Fail(c, http.StatusBadRequest, "Send an empty JSON object to restart the local sing-box service")
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		httputil.Fail(c, http.StatusBadRequest, "Send one JSON object")
+		return
+	}
+	job, err := h.core.Queue(c.Request.Context(), middleware.CurrentUser(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusAccepted, httputil.Response{Success: true, Obj: job})
+}
+
+func (h *SystemHandler) coreRestartJob(c *gin.Context) {
+	job, err := h.core.Job(c.Param("id"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	httputil.Data(c, job)
+}
+
+func (h *SystemHandler) coreLogs(c *gin.Context) {
+	lines, err := h.core.Logs(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	httputil.Data(c, struct {
+		Lines []string `json:"lines"`
+	}{Lines: lines})
 }
 
 func (h *SystemHandler) status(c *gin.Context) {

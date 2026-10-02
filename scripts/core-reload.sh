@@ -11,6 +11,12 @@ target_dir="$(dirname "${target_path}")"
 [[ "$(realpath "${source_path}")" == "${source_path}" ]]
 [[ "$(realpath "${target_dir}")" == "${target_dir}" ]]
 [[ ! -L "${target_path}" ]]
+# The Overview restart helper uses this same lock while validating/restarting
+# the service. Hold it before validating or replacing the applied configuration.
+lock_path="${target_dir}/.x-ui-core.lock"
+[[ ! -L "${lock_path}" ]]
+exec 9>"${lock_path}"
+flock -w 25 9
 sing-box check -c "${source_path}"
 
 core_user="$(systemctl show sing-box.service --property=User --value)"

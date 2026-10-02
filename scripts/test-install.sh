@@ -19,6 +19,7 @@ cleanup() {
 }
 trap cleanup EXIT
 export X_UI_TEST_ROOT="${test_root}"
+export X_UI_TEST_REAL_FLOCK="$(command -v flock)"
 if [[ "${X_UI_TEST_TRACE:-false}" == true ]]; then set -x; fi
 mkdir -p "${test_root}/tools" "${test_root}/state" "${test_root}/archive/x-ui/bin" "${test_root}/archive/x-ui/migrations" "${test_root}/archive/x-ui/web/build" "${test_root}/services" "${test_root}/core"
 
@@ -66,6 +67,12 @@ set -euo pipefail
 [[ "$1" == check ]]
 echo "core-check" >>"${X_UI_TEST_ROOT}/events"
 if [[ "${X_UI_TEST_CORE_INVALID:-false}" == true ]]; then exit 7; fi
+EOF
+cat >"${test_root}/tools/flock" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${X_UI_TEST_CORE_BUSY:-false}" == true ]]; then exit 1; fi
+exec "${X_UI_TEST_REAL_FLOCK}" "$@"
 EOF
 cat >"${test_root}/tools/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -238,6 +245,13 @@ source_path="${test_root}/node/helper-candidate.json"
 target_path="${test_root}/core/config.json"
 echo '{"old":true}' >"${target_path}"
 echo '{"new":true}' >"${source_path}"
+cp "${test_root}/events" "${test_root}/events.before-lock"
+if X_UI_TEST_CORE_BUSY=true bash "${repo}/scripts/core-reload.sh" "${source_path}" "${target_path}" >"${test_root}/busy-core.log" 2>&1; then
+  echo 'Core application ignored the restart lock' >&2
+  exit 1
+fi
+grep -q '"old"' "${target_path}"
+cmp "${test_root}/events.before-lock" "${test_root}/events"
 if X_UI_TEST_CORE_INVALID=true bash "${repo}/scripts/core-reload.sh" "${source_path}" "${target_path}" >"${test_root}/invalid-core.log" 2>&1; then
   echo 'Invalid candidate was applied' >&2
   exit 1
@@ -251,4 +265,4 @@ grep -q '"old"' "${target_path}"
 bash "${repo}/scripts/core-reload.sh" "${source_path}" "${target_path}"
 cmp "${source_path}" "${target_path}"
 [[ "$(stat -c '%a' "${target_path}")" == 640 ]]
-echo 'Installer regression checks passed (fresh/repeated/panel-only installs, migration/statistics failure recovery, core validation and reload rollback).'
+echo 'Installer regression checks passed (fresh/repeated/panel-only installs, migration/statistics failure recovery, core restart lock, validation and reload rollback).'

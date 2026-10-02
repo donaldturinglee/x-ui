@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_TILES, TILE_GROUPS, tileTitle } from "@/features/overview/tiles";
-import { useTilesStore } from "@/stores/tiles";
+import { migrateTiles, useTilesStore } from "@/stores/tiles";
 
 describe("tile catalogue", () => {
     it("offers every tile the overview can draw, once", () => {
@@ -36,5 +36,21 @@ describe("tiles store", () => {
         useTilesStore.getState().setTiles(["i-sys", "g-mem"]);
 
         expect(useTilesStore.getState().tiles).toEqual(["g-mem", "i-sys"]);
+    });
+
+    it("adds the core card to an existing selection without restoring hidden cards", () => {
+        expect(migrateTiles({ tiles: ["i-sys", "g-mem", "unknown"] }).tiles).toEqual([
+            "g-mem",
+            "i-sys",
+            "i-core",
+        ]);
+    });
+
+    it("adds the core card when all old cards were hidden", () => {
+        expect(migrateTiles({ tiles: [] }).tiles).toEqual(["i-core"]);
+    });
+
+    it("uses defaults for an invalid stored selection", () => {
+        expect(migrateTiles(null).tiles).toEqual(DEFAULT_TILES);
     });
 });

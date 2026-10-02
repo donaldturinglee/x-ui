@@ -11,6 +11,7 @@ import {
 
 import { AppShell } from "@/components/AppShell";
 import { AuthProvider } from "@/providers/auth/AuthProvider";
+import { settings } from "@/settings";
 import { useThemeStore } from "@/stores/theme";
 
 import { Route } from "./Route";
@@ -100,11 +101,9 @@ export const buildRoutes = (): RouteObject[] => [
 let browserRouter: ReturnType<typeof createBrowserRouter> | null = null;
 
 export const Router = () => {
-    // The router is told where the panel starts, the base Vite built it for,
-    // rather than assuming the root of the host, so the assets and the routes
-    // are addressed from the one setting.
+    // The server's runtime base is shared by the assets, routes and API calls.
     browserRouter ??= createBrowserRouter(buildRoutes(), {
-        basename: import.meta.env.BASE_URL.replace(/\/$/, ""),
+        basename: settings.basePath.replace(/\/$/, ""),
     });
 
     return <RouterProvider router={browserRouter} />;

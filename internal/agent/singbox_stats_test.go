@@ -90,6 +90,23 @@ func TestSingBoxNativeStatsUserTagsAndDeltas(t *testing.T) {
 	}
 }
 
+func TestSingBoxReadinessProbeDoesNotConsumeReporterMeasurements(t *testing.T) {
+	frame := grpcWebFrame(0, nativeSnapshot)
+	server := nativeStatsServer(t, &frame)
+	cfg := StatsConfig{Source: StatsSourceSingBox, URL: server.URL, Secret: "stats-secret", Timeout: Duration(time.Second)}
+	if err := ProbeSingBoxStats(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := NewStatsSource(cfg).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := find(reports, domain.ResourceClient, "zxc")
+	if report == nil || report.Up != 100 || report.Down != 900 {
+		t.Fatal("readiness probe consumed traffic counters", report)
+	}
+}
+
 func TestSingBoxNativeStatsRejectsInvalidFrames(t *testing.T) {
 	oversized := make([]byte, 5)
 	binary.BigEndian.PutUint32(oversized[1:], maxResponseBytes+1)

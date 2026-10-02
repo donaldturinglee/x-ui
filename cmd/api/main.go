@@ -9,8 +9,10 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"os"
@@ -246,7 +248,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 	outboundHandler := handler.NewOutboundHandler(deps.outbounds)
 	configHandler := handler.NewConfigHandler(deps.configs)
 	panelHandler := handler.NewPanelHandler(deps.panel)
-	settingHandler := handler.NewSettingHandler(deps.settings, deps.telegram, cfg.Shown())
+	settingHandler := handler.NewSettingHandler(deps.settings, deps.telegram, cfg)
 	systemHandler := handler.NewSystemHandler(deps.system)
 	statsHandler := handler.NewStatsHandler(deps.stats, deps.settings, deps.health)
 
@@ -308,6 +310,10 @@ func mountPanel(engine *gin.Engine, buildDir string, base string) {
 	engine.Static(base+"assets", filepath.Join(buildDir, "assets"))
 
 	index := filepath.Join(buildDir, "index.html")
+	// The build uses relative asset paths. This base also supplies the router
+	// and API paths, so moving the panel does not require rebuilding its UI.
+	runtime, _ := json.Marshal(map[string]string{"basePath": base})
+	runtimeHTML := fmt.Sprintf(`<base href="%s"><script id="x-ui-runtime" type="application/json">%s</script>`, html.EscapeString(base), runtime)
 
 	engine.NoRoute(underBase(base, func(c *gin.Context) {
 		// The panel is one page: every path under the base returns it and the
@@ -317,7 +323,13 @@ func mountPanel(engine *gin.Engine, buildDir string, base string) {
 		// It is answered as no-store because the file names the hashed assets
 		// for this build, and a cached one would name the last build's.
 		c.Header("Cache-Control", "no-store")
-		c.File(index)
+		data, err := os.ReadFile(index)
+		if err != nil {
+			httputil.Internal(c)
+			return
+		}
+		page := strings.Replace(string(data), "<head>", "<head>"+runtimeHTML, 1)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(page))
 	}))
 }
 
@@ -497,6 +509,12 @@ func serve(cfg *config.Config, panel *gin.Engine, subscriptions *gin.Engine) err
 			return err
 		}
 		servers = append(servers, server)
+	}
+	if err := service.RecordPanelProcess("api", cfg); err != nil {
+		logger.Warning("unable to record Panel restart readiness: ", err)
+	}
+	if err := service.CheckpointPanelConfiguration(cfg); err != nil {
+		logger.Warning("unable to checkpoint Panel configuration: ", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)

@@ -435,17 +435,20 @@ the subscription's options and the bot's are saved and put back apart -- a
 tab's Restore defaults names its own keys to `/settings/reset`, so putting the
 subscription back does not forget the bot's token -- NTP, HTTP clients, the
 experimental interfaces and the log are each saved into the base document.
-Panel and Sing Box are read-only; two-factor authentication belongs to the
+Sing Box is read-only; two-factor authentication belongs to the
 signed-in operator.
 
-- **Panel** is the reference's interface tab, shown rather than edited: the
+- **Panel** is the reference's interface tab, edited and saved: the
   panel's own address, port, path, domain and certificate, the session's
   length, how long traffic is kept and in what buckets, the worker's schedules
-  and time zone, the trusted proxies and the log level, as the process read
-  them from `configs/config.yaml` and the environment (`/settings/startup`). A
-  panel that rewrote its own port could leave itself unreachable, and the file
-  is the one place that can always be put right, so there is nothing to save
-  and no restart: the process is restarted by whatever runs it. It says so when
+  and time zone, the trusted proxies and the log level. `/settings/panel` reads
+  saved and API startup values separately. Its POST accepts only the typed
+  Panel fields and the file revision the draft started from. It validates the
+  candidate, preserves other YAML fields and comments, and replaces the file
+  atomically with its existing permissions. Environment overrides are locked;
+  stale saves are refused. The API and worker are restarted by whatever runs
+  them to apply changes. Relative assets and a server-supplied document base
+  keep the router and API aligned with an edited Web path. It says so when
   no session secret is configured, since every session then ends with the
   process.
 - **Subscription** is where subscribers fetch it and how often their
@@ -489,8 +492,8 @@ signed-in operator.
   document's `log` key, edited as the experimental interfaces are, and with
   only a Save as they have. It is the nodes' log rather than the panel's, which
   the tab says: what the panel itself has been saying is read from the
-  overview, and how much it says is set in `configs/config.yaml`, which the
-  Panel tab shows.
+  overview, and how much it says is saved through the Panel tab into
+  `configs/config.yaml` and applied on restart.
 
 The reference has no two-factor authentication, Telegram bot or generated
 configuration on its settings page; those three tabs are this panel's own. It
@@ -1109,6 +1112,51 @@ a restart, which is the set that cannot come from a file the operator may have
 no way to edit. The panel's settings page shows the rest as the process read it
 (`GET /settings/startup`) and never writes it; nothing secret is in that view —
 the session secret is said to be set or not, and the database is left out.
+
+The editable Panel form uses `GET/POST /settings/panel` and saves only its
+listener, session lifetime, worker and logging options. Saving never restarts
+the processes. `POST /settings/panel/restart` accepts the saved file revision
+and returns a task ID with HTTP 202; `GET /settings/panel/restart/:id` reports
+its progress. The installed CLI runs the task under a separate systemd timer
+and service, so replacing the API does not terminate its own restart task.
+Task records, the applied configuration checkpoint and API/worker readiness
+files live in the root-private `configs/.panel-runtime` directory. Configuration
+saves and restart tasks share a cross-process file lock. Readiness checks
+compare the supervisor's PID, the process startup time and effective settings,
+and probe `/healthz` at the root independently of the panel's Web path.
+Only the API, worker and, for connection changes, the locally managed agent
+are restarted. Connection refresh preserves the existing token, statistics and
+core settings. Failure restores only Panel keys and backed-up agent connection
+files, preserving unrelated YAML options. A helper interrupted mid-operation
+resumes recovery rather than retrying the failing configuration.
+Legacy loopback agents are supported even without an installer state file.
+Their authenticated Panel connection is checked through `node -check-panel`,
+without requiring or initializing native statistics and core settings.
+
+The Overview's local core card uses `GET /core` to read `sing-box.service`
+through systemd, independently of the maintenance flag. `POST /core/restart`
+accepts only `{}` and queues an independent CLI task with HTTP 202. Concurrent
+requests return the current task. `GET /core/restart/:id` follows its persisted
+progress; `GET /core/logs` returns at most 80 journal entries (64 KiB).
+These routes use the same session/token authentication as other operator tools.
+
+The core task records its actor, timestamps, before/after PIDs and terminal
+result under root-private `configs/.core-runtime`, and audits its request and
+result. It validates the installed service's actual configuration arguments,
+preserving its data and configuration directories. Only the installed local
+`sing-box.service` is restarted. Validation failure leaves the process running;
+success requires a different PID and a healthy authenticated loopback native
+statistics API. The readiness probe reads a cumulative snapshot without
+advancing the agent's traffic measurements. An interrupted helper does not
+issue a second restart when resuming verification.
+
+The installed agent reload helper and core task both hold
+`<core-config-directory>/.x-ui-core.lock` while validating, applying or
+restarting. This prevents a manual restart from racing a downloaded core
+configuration. The capability is unavailable for unsupported service launch
+arguments, unmanaged agents or missing native statistics. Panel configuration,
+API/worker processes, agent credentials and remote nodes are not changed by
+the core restart task.
 
 That line is why the address subscribers fetch from is `subscription.public_url`
 in the file rather than a row in the table. It belongs beside the port, path,

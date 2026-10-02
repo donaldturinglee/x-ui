@@ -160,15 +160,35 @@ X-UI-Maintenance: true
 `/api/load` reports the flag on every poll, so a panel already open finds
 out without being told.
 
+### Restarting the local proxy core
+
+The Overview **sing-box** card shows the local service's actual state, PID and
+uptime. **Restart sing-box** asks for confirmation because existing proxy
+connections will close. Its separate task validates the service's current
+configuration, restarts only `sing-box.service`, then confirms a new PID and a
+healthy native statistics API. The panel remains available. **Logs** reads the
+last 80 journal entries and shows any restart failure.
+
+This control requires the root-managed systemd installation, its local agent,
+native sing-box statistics and the updated core reload helper. The agent's
+configuration application and manual restart share a file lock. Remote nodes
+are not controlled by this card. Panel settings saved for a later restart are
+not applied by restarting sing-box.
+
 ### Settings
 
 The settings page, under General in the rail, is nine tabs:
 
 - **Panel** — the panel's own listener, sessions and the worker's schedules,
-  shown as the process read them from `configs/config.yaml` and the
-  environment. Nothing there is saved from the page: a panel that rewrote its
-  own port could leave itself unreachable, and the file is the one place that
-  can always be put right.
+  edited and saved to `configs/config.yaml`. Save validates the configuration
+  and preserves other options and secrets. On a systemd installation, choose
+  **Restart & Apply** after saving. A separate task restarts the API and worker,
+  refreshes the locally managed agent connection when needed, and checks that
+  the services are ready. Failed changes restore the previous Panel configuration;
+  the proxy core keeps running. Other environments use their process manager
+  (or `x-ui restart` on an installed host). Pending values survive
+  a page reload; environment-controlled fields are locked and identified.
+  Changing the listener, Web path, domain or TLS may change the sign-in URL.
 - **Subscription** — the refresh interval and link options subscribers are
   served with, and the subscription listener as the configuration sets it.
 - **Two-factor authentication** — the signed-in operator's own. Once it is on,
@@ -405,6 +425,7 @@ x-ui-cli healthcheck
 x-ui-cli healthcheck -subscription
 x-ui-cli node -setup         # configure the local node after migrate/seed
 x-ui-cli node -check         # sync and authenticated statistics; no proxy traffic
+x-ui-cli node -check-panel   # panel connection only, including legacy local agents
 x-ui-cli database -check
 x-ui-cli database -backup /private/path/database.dump
 x-ui-cli database -restore /private/path/database.dump -yes
@@ -558,8 +579,8 @@ password.
 
 It offers to change the panel's port, the subscription port and path, and the
 operator account. Declined, a fresh install gets an account with generated
-credentials, printed once. The panel's own path is not offered: the panel is
-built to be served from the root, `/`.
+credentials, printed once. The panel's Web path can be edited in Settings →
+Panel; the server supplies that path to the assets, router and API at runtime.
 
 What the installer chose is kept in
 `/usr/local/x-ui/configs/config.yaml`, beside the database password and

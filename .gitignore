@@ -35,6 +35,8 @@ agent.env
 .x-ui-node-*
 .x-ui-check-*.json
 .x-ui-database-restore-*.sql
+.panel-runtime/
+.core-runtime/
 
 # Log files
 *.log*

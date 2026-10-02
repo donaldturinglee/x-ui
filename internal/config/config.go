@@ -236,18 +236,11 @@ func Default() *Config {
 // where they can differ without a file having to describe every place the panel
 // might run.
 func Load() (*Config, error) {
-	cfg := Default()
-
-	if err := cfg.mergeFile(filepath.Join(Dir(), "config.yaml")); err != nil {
+	data, err := os.ReadFile(filepath.Join(Dir(), "config.yaml"))
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-
-	cfg.applyEnv()
-
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return Parse(data)
 }
 
 // Dir reports where the config file lives.
@@ -258,22 +251,18 @@ func Dir() string {
 	return "configs"
 }
 
-// mergeFile decodes a file over the config already built, replacing the keys it
-// names and leaving the rest of the defaults standing. A missing file is not an
-// error: the defaults are a complete configuration on their own, which is what
-// lets a container run on environment variables alone.
-func (c *Config) mergeFile(path string) error {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
+// Parse uses the same defaults, environment overrides and validation as Load.
+// It also validates a proposed file before the settings page replaces it.
+func Parse(data []byte) (*Config, error) {
+	cfg := Default()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config.yaml: %w", err)
 	}
-	if err != nil {
-		return err
+	cfg.applyEnv()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	if err := yaml.Unmarshal(data, c); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
-	}
-	return nil
+	return cfg, nil
 }
 
 func (c *Config) applyEnv() {

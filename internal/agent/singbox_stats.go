@@ -22,6 +22,16 @@ func NewSingBoxStats(cfg StatsConfig) *ClashStats {
 	return stats
 }
 
+// ProbeSingBoxStats reads the native API's initial cumulative snapshot without
+// advancing a reporter's counters or reporting traffic to the panel.
+func ProbeSingBoxStats(ctx context.Context, cfg StatsConfig) error {
+	if cfg.Source != StatsSourceSingBox {
+		return fmt.Errorf("native sing-box statistics are not configured")
+	}
+	_, err := NewSingBoxStats(cfg).fetchSingBox(ctx)
+	return err
+}
+
 func (c *ClashStats) fetchSingBox(ctx context.Context) (*clashConnections, error) {
 	// SubscribeConnections initially returns a complete connection snapshot.
 	// Read that first message and close the stream; the regular reporting loop

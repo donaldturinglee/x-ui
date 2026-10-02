@@ -308,26 +308,26 @@ install_base() {
       # Every question debconf would ask has the right default here, and asking
       # one mid-install would read the answer meant for this script.
       apt-get update -q
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl tar ca-certificates postgresql-client
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl tar ca-certificates postgresql-client util-linux
       ;;
     dnf | yum)
       # The RHEL 9 family ships curl-minimal, which conflicts with curl.
       command -v curl >/dev/null 2>&1 || "${packager}" install -y -q curl
-      "${packager}" install -y -q tar gzip gawk ca-certificates postgresql
+      "${packager}" install -y -q tar gzip gawk ca-certificates postgresql util-linux
       ;;
     zypper)
       # ca-certificates is only the framework here; the certificates are in
       # ca-certificates-mozilla.
       zypper -q refresh
-      zypper -q install -y curl tar gzip gawk ca-certificates-mozilla postgresql
+      zypper -q install -y curl tar gzip gawk ca-certificates-mozilla postgresql util-linux
       ;;
     pacman)
-      pacman -Syu --noconfirm --needed curl tar gzip gawk ca-certificates postgresql
+      pacman -Syu --noconfirm --needed curl tar gzip gawk ca-certificates postgresql util-linux
       ;;
     apk)
       # bash to run this script, and OpenRC to run the services.
       apk update
-      apk add --no-cache curl tar ca-certificates bash openrc
+      apk add --no-cache curl tar ca-certificates bash openrc util-linux
       ;;
   esac
 }
@@ -701,6 +701,8 @@ EOF
 }
 
 # Keep existing secrets and operator-edited agent configuration on upgrades.
+# Panel Restart & Apply uses the installed CLI's connection-only refresh,
+# rather than this initial statistics/core setup.
 # A fresh token is minted before x-ui-api starts, so its token cache sees it.
 setup_agent_files() {
   "${CLI}" node -setup -directory "${NODE_DIR}"
@@ -844,9 +846,7 @@ config_after_install() {
   echo -e "${yellow}Install/update finished! For security it's recommended to modify panel settings${plain}"
   read -r -p "Do you want to continue with the modification [y/n]? " config_confirm || true
   if [[ "${config_confirm}" == "y" || "${config_confirm}" == "Y" ]]; then
-    # No panel path. The panel is built to be served from the root, /, and
-    # loads its scripts from there, so anywhere else it would be a page that
-    # never draws.
+    # The panel path is also editable through Settings -> Panel.
     ask_port "panel port" server.port 8000 subscription.port 8443
     ask_port "subscription port" subscription.port 8443 server.port 8000
     ask_path "subscription path" subscription.base_path /sub/
@@ -925,11 +925,14 @@ public_address() {
 # `uri` command does: this host's own, and the one the internet reaches it by --
 # which on most cloud hosts is on none of its interfaces.
 show_uri() {
-  local port domain listen scheme="http" suffix addresses address public
+  local port domain listen scheme="http" suffix addresses address public panel_path
   port="$(config_value server.port)"
   port="${port:-8000}"
   domain="$(config_value server.domain)"
   listen="$(config_value server.listen)"
+  panel_path="$(config_value server.base_path)"
+  panel_path="/${panel_path#/}"
+  [[ "${panel_path}" == */ ]] || panel_path="${panel_path}/"
   if [[ -n "$(config_value server.cert_file)" ]]; then
     scheme="https"
   fi
@@ -939,7 +942,7 @@ show_uri() {
   fi
 
   if [[ -n "${domain}" || -n "${listen}" ]]; then
-    echo -e "${green}${scheme}://${domain:-${listen}}${suffix}/${plain}"
+    echo -e "${green}${scheme}://${domain:-${listen}}${suffix}${panel_path}${plain}"
     return 0
   fi
   addresses="$(local_addresses)"
@@ -949,7 +952,7 @@ show_uri() {
       if [[ "${address}" == *:* ]]; then
         address="[${address}]"
       fi
-      echo -e "${green}${scheme}://${address}${suffix}/${plain}"
+      echo -e "${green}${scheme}://${address}${suffix}${panel_path}${plain}"
     done
   fi
   public="$(public_address)"
@@ -961,7 +964,7 @@ show_uri() {
       echo
     fi
     echo -e "Global address:"
-    echo -e "${green}${scheme}://${public}${suffix}/${plain}"
+    echo -e "${green}${scheme}://${public}${suffix}${panel_path}${plain}"
   fi
 }
 

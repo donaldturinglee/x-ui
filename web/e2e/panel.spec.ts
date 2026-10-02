@@ -837,24 +837,22 @@ test.describe("the panel", () => {
         await expect(tabs.getByRole("tab", { name: "Logs" })).toBeInViewport();
     });
 
-    test("shows the panel's own settings as the process read them", async ({ page }) => {
+    test("shows editable panel settings and the session-secret warning", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
         await page.goto("/general/settings?tab=panel");
 
         const panel = page.getByRole("tabpanel", { name: "Panel", exact: true });
 
-        // Read from configs/ at startup, and so shown rather than changed.
         await expect(panel.getByLabel("Port", { exact: true })).toHaveValue("8000");
-        await expect(panel.getByLabel("Port", { exact: true })).toHaveAttribute("readonly", "");
+        await expect(panel.getByLabel("Port", { exact: true })).toBeEditable();
         await expect(panel.getByLabel("Web path")).toHaveValue("/");
         await expect(panel.getByLabel("Session length (minutes)")).toHaveValue("0");
         await expect(panel.getByLabel("Traffic kept for (days)")).toHaveValue("30");
-        // A job with no schedule is switched off, and says so.
-        await expect(panel.getByLabel("Global traffic reset")).toHaveValue("Off");
+        await expect(panel.getByLabel("Global traffic reset")).toHaveValue("");
         // Without a secret of its own, every session ends at a restart.
         await expect(panel).toContainText("No session secret is configured");
-        await expect(panel.getByRole("button", { name: "Save" })).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
     });
 
     test("turns two-factor authentication on with a code from the app", async ({ page }) => {

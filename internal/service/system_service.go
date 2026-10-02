@@ -84,6 +84,13 @@ func NewSystemService(store *repository.Store, settings *SettingService) *System
 	return &SystemService{store: store, settings: settings, startedAt: time.Now()}
 }
 
+func (s *SystemService) Settings() *SettingService {
+	if s == nil {
+		return nil
+	}
+	return s.settings
+}
+
 // Status gathers everything that can be read, and names what could not.
 func (s *SystemService) Status(ctx context.Context) *SystemStatus {
 	var memStats runtime.MemStats

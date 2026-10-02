@@ -9,7 +9,7 @@ export type GaugeTileId = "g-cpu" | "g-mem" | "g-dsk" | "g-swp";
 
 export type ChartTileId = "h-cpu" | "h-mem" | "h-net" | "hp-net";
 
-export type InfoTileId = "i-panel" | "i-sys";
+export type InfoTileId = "i-panel" | "i-sys" | "i-core";
 
 export type TileId = GaugeTileId | ChartTileId | InfoTileId;
 
@@ -45,6 +45,7 @@ export const TILE_GROUPS: TileGroup[] = [
         tiles: [
             { id: "i-sys", title: "System info" },
             { id: "i-panel", title: "Panel info" },
+            { id: "i-core", title: "sing-box" },
         ],
     },
 ];
@@ -68,6 +69,7 @@ export const inCatalogueOrder = (ids: Iterable<TileId>) => {
 export const DEFAULT_TILES: TileId[] = inCatalogueOrder([
     "i-panel",
     "i-sys",
+    "i-core",
     "g-cpu",
     "g-mem",
     "g-dsk",

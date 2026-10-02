@@ -1,5 +1,12 @@
 import type { Page, Route } from "@playwright/test";
 
+import type { CoreRestartJob, CoreStatus } from "../../src/features/overview/api/core";
+import type {
+    PanelSettings,
+    PanelSettingsState,
+    PanelRestartJob,
+} from "../../src/features/settings/api/panel";
+
 // The suite answers every API call itself rather than bringing up a Go server
 // and a database, so a run needs nothing but a browser and says exactly what
 // the panel was given.
@@ -24,6 +31,18 @@ export interface ApiState {
     // Written by the settings form and read back by it, so a test can check
     // that a save landed rather than only that the form submitted.
     settings?: Record<string, string>;
+    panelSettings?: PanelSettingsState;
+    panelSaves?: number;
+    panelRestarts?: number;
+    panelRestartPolls?: number;
+    panelRestartHold?: boolean;
+    panelRestartOutcome?: "succeeded" | "rolled_back" | "failed";
+    coreStatus?: CoreStatus;
+    coreRestarts?: number;
+    coreRestartPolls?: number;
+    coreRestartHold?: boolean;
+    coreRestartOutcome?: "succeeded" | "failed";
+    coreRestartPhase?: "checking" | "restarting" | "verifying";
     // Written, amended and taken away by the listeners table, and read back the
     // same way. Held as state rather than answered from a constant so a test
     // checks what the panel actually sent.
@@ -112,6 +131,13 @@ export const startupSettings = {
         statsBucketSeconds: 60,
     },
     logLevel: "info",
+};
+
+export const defaultPanelSettings: PanelSettings = {
+    ...startupSettings.panel,
+    ...startupSettings.worker,
+    maxAgeSeconds: startupSettings.session.maxAgeSeconds,
+    logLevel: startupSettings.logLevel,
 };
 
 // A listener with an option the panel does not model, which is what an edit has
@@ -226,21 +252,30 @@ const refuseBlockOptions = (body: Record<string, unknown>) => {
 // A request for the API, matched from the root of the path. Every feature keeps
 // its requests in an `api` module of its own, so a pattern finding `/api/`
 // anywhere would answer the dev server's own requests for those modules too.
-const isApiRequest = ({ pathname }: URL) => pathname.startsWith("/api/");
-
 // mockApi answers the panel's reads and writes against a small piece of state
 // the test can set up front and the panel can change through the UI.
-export const mockApi = async (page: Page, state: ApiState) => {
+export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
     state.settings ??= { ...defaultSettings };
+    state.panelSettings ??= {
+        saved: structuredClone(defaultPanelSettings),
+        running: structuredClone(defaultPanelSettings),
+        revision: "panel-0",
+        overrides: {},
+        restartRequired: false,
+        restartSupported: true,
+    };
     state.inbounds ??= defaultInbounds.map((inbound) => ({ ...inbound }));
     state.outbounds ??= defaultOutbounds.map((outbound) => ({ ...outbound }));
     state.clients ??= [{ ...client }];
     state.baseConfig ??= { ...defaultBaseConfig };
+    state.coreStatus ??= { supported: true, state: "active", pid: 4242, uptimeSeconds: 3600 };
+
+    const isApiRequest = ({ pathname }: URL) => pathname.startsWith(`${basePath}api/`);
 
     await page.route(isApiRequest, async (route: Route) => {
         const request = route.request();
         const url = new URL(request.url());
-        const path = url.pathname.replace("/api", "");
+        const path = url.pathname.slice(`${basePath}api`.length);
         const method = request.method();
 
         if (path === "/signin" && method === "POST") {
@@ -821,6 +856,158 @@ export const mockApi = async (page: Page, state: ApiState) => {
 
         if (path === "/settings/startup") {
             await route.fulfill(envelope(startupSettings));
+            return;
+        }
+
+        if (path === "/core" && method === "GET") {
+            await route.fulfill(envelope(state.coreStatus));
+            return;
+        }
+
+        if (path === "/core/logs" && method === "GET") {
+            await route.fulfill(
+                envelope({ lines: ["sing-box started", "Statistics API listening"] }),
+            );
+            return;
+        }
+
+        if (path === "/core/restart" && method === "POST") {
+            const current = state.coreStatus!;
+            if (!current.supported) {
+                await route.fulfill(refusal(400, current.reason ?? "Core restart is unavailable"));
+                return;
+            }
+            let job = current.restartJob;
+            if (!job || ["succeeded", "failed"].includes(job.state)) {
+                state.coreRestarts = (state.coreRestarts ?? 0) + 1;
+                state.coreRestartPolls = 0;
+                job = {
+                    id: `core-${state.coreRestarts}`,
+                    state: "queued",
+                    actor: "operator",
+                    requestedAt: new Date().toISOString(),
+                    beforePid: current.pid,
+                    afterPid: 0,
+                } satisfies CoreRestartJob;
+                current.restartJob = job;
+            }
+            await route.fulfill({ ...envelope(job), status: 202 });
+            return;
+        }
+
+        if (path.startsWith("/core/restart/") && method === "GET") {
+            const current = state.coreStatus!;
+            const job = current.restartJob;
+            if (!job || !path.endsWith(`/${job.id}`)) {
+                await route.fulfill(refusal(404, "Core restart task does not exist"));
+                return;
+            }
+            if (!["succeeded", "failed"].includes(job.state)) {
+                state.coreRestartPolls = (state.coreRestartPolls ?? 0) + 1;
+                if (state.coreRestartHold) job.state = state.coreRestartPhase ?? "checking";
+                else if (state.coreRestartPolls < 4)
+                    job.state =
+                        state.coreRestartPolls === 1
+                            ? "checking"
+                            : state.coreRestartPolls === 2
+                              ? "restarting"
+                              : "verifying";
+                else {
+                    job.state = state.coreRestartOutcome ?? "succeeded";
+                    job.finishedAt = new Date().toISOString();
+                    if (job.state === "succeeded") {
+                        job.afterPid = job.beforePid + 1;
+                        current.pid = job.afterPid;
+                        current.uptimeSeconds = 1;
+                    } else
+                        job.error =
+                            "The current sing-box configuration failed validation; the service was not restarted.";
+                }
+            }
+            await route.fulfill(envelope(job));
+            return;
+        }
+
+        if (path === "/settings/panel" && method === "GET") {
+            await route.fulfill(envelope(state.panelSettings));
+            return;
+        }
+
+        if (path === "/settings/panel" && method === "POST") {
+            const body = request.postDataJSON() as { revision: string; values: PanelSettings };
+            const current = state.panelSettings!;
+
+            if (body.revision !== current.revision) {
+                await route.fulfill(
+                    refusal(
+                        409,
+                        "Configuration changed since you started editing. Discard changes and try again",
+                    ),
+                );
+                return;
+            }
+            state.panelSaves = (state.panelSaves ?? 0) + 1;
+            state.panelSettings = {
+                ...current,
+                saved: body.values,
+                revision: `panel-${state.panelSaves}`,
+                restartRequired: JSON.stringify(body.values) !== JSON.stringify(current.running),
+            };
+            await route.fulfill(envelope(state.panelSettings));
+            return;
+        }
+
+        if (path === "/settings/panel/restart" && method === "POST") {
+            const current = state.panelSettings!;
+            const body = request.postDataJSON() as { revision: string };
+            if (body.revision !== current.revision) {
+                await route.fulfill(
+                    refusal(409, "Configuration changed; refresh before applying it"),
+                );
+                return;
+            }
+            state.panelRestarts = (state.panelRestarts ?? 0) + 1;
+            state.panelRestartPolls = 0;
+            const job: PanelRestartJob = {
+                id: `restart-${state.panelRestarts}`,
+                state: "queued",
+                revision: current.revision,
+                actor: "operator",
+                requestedAt: new Date().toISOString(),
+                values: structuredClone(current.saved),
+                previous: structuredClone(current.running),
+            };
+            current.restartJob = job;
+            await route.fulfill({ ...envelope(job), status: 202 });
+            return;
+        }
+
+        if (path.startsWith("/settings/panel/restart/") && method === "GET") {
+            const current = state.panelSettings!;
+            const job = current.restartJob;
+            if (!job || !path.endsWith(`/${job.id}`)) {
+                await route.fulfill(refusal(404, "Restart task does not exist"));
+                return;
+            }
+            state.panelRestartPolls = (state.panelRestartPolls ?? 0) + 1;
+            if (state.panelRestartHold || state.panelRestartPolls < 2) job.state = "running";
+            else if (["queued", "running", "rolling_back"].includes(job.state)) {
+                job.state = state.panelRestartOutcome ?? "succeeded";
+                job.finishedAt = new Date().toISOString();
+                if (job.state === "succeeded") {
+                    current.running = structuredClone(job.values);
+                    current.restartRequired = false;
+                } else if (job.state === "rolled_back") {
+                    current.saved = structuredClone(job.previous);
+                    current.running = structuredClone(job.previous);
+                    current.revision = `restored-${state.panelRestarts}`;
+                    current.restartRequired = false;
+                    job.error =
+                        "The saved configuration could not be applied. The previous Panel configuration has been restored.";
+                } else
+                    job.error = "The services did not recover; check them from the command line.";
+            }
+            await route.fulfill(envelope(job));
             return;
         }
 

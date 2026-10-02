@@ -3,10 +3,9 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-// The panel is served from the root of the host, the same base the API is
-// mounted under, so the built assets are addressed from there. The Go server's
-// server.base_path says the same, and the two have to agree.
-const BASE_PATH = "/";
+// The Go server supplies the document base at runtime, so a saved Web path
+// applies to assets, routing and API calls without rebuilding the panel.
+const BASE_PATH = "./";
 
 // Where the Go server listens in development. The dev server proxies to it
 // rather than the browser calling it directly: the session is a cookie and the

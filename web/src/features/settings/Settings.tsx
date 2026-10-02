@@ -47,8 +47,8 @@ export const settingsTabPath = (tab: SettingsTab) =>
 // The panel's settings, laid out as the reference lays out its settings page:
 // one card with its tabs centred across the top and the open one's options
 // under them. Each tab acts on its own -- the subscription's and the Telegram
-// bot's are saved and put back apart, the panel's own and the generated
-// configuration are shown, two-factor authentication is the signed-in
+// bot's are saved and put back apart, the panel's own are saved for a restart,
+// generated configuration is shown, two-factor authentication is the signed-in
 // operator's, and the core's clock, HTTP clients, experimental interfaces and
 // log are each saved into the document the nodes are configured from. Each has
 // its buttons along the foot of the card rather than one Save for all of

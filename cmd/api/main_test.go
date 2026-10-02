@@ -3,10 +3,41 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestMountPanelSuppliesRuntimeBaseForDeepLinksAndAssets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	build := t.TempDir()
+	if err := os.Mkdir(filepath.Join(build, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "index.html"), []byte(`<html><head><script type="module" src="./assets/main.js"></script></head><body></body></html>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "assets", "main.js"), []byte("asset contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []string{"/", "/panel/nested/"} {
+		engine := gin.New()
+		mountPanel(engine, build, base)
+		page := httptest.NewRecorder()
+		engine.ServeHTTP(page, httptest.NewRequest(http.MethodGet, base+"general/settings", nil))
+		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<base href="`+base+`">`) || !strings.Contains(page.Body.String(), `"basePath":"`+base+`"`) {
+			t.Fatalf("runtime base missing for %s: %d %s", base, page.Code, page.Body.String())
+		}
+		asset := httptest.NewRecorder()
+		engine.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, base+"assets/main.js", nil))
+		if asset.Code != http.StatusOK || asset.Body.String() != "asset contents" {
+			t.Fatalf("asset failed under %s: %d", base, asset.Code)
+		}
+	}
+}
 
 // The panel is mounted at the root unless the configuration moves it, so the
 // root is what these check first. A moved panel is checked as well, for what
