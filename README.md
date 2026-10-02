@@ -457,6 +457,7 @@ scripts/build.sh           # bin/x-ui-{api,worker,cli,agent}
 scripts/test.sh            # unit tests; no database needed
 scripts/check.sh           # formatting, vet and tests, as CI runs them
 scripts/test-install.sh    # isolated install/upgrade/recovery regression checks
+scripts/test-release.sh    # isolated release tagging and retry checks
 scripts/test-database.sh   # optional integration checks; requires PostgreSQL
 scripts/migrate.sh -status
 ```
@@ -639,14 +640,20 @@ beside them. Each archive includes `bin/x-ui-core-reload`. The installer
 configures and enables the local node, as [Running a node](#running-a-node) describes.
 
 ```sh
-git tag v1.2.0
-git push origin v1.2.0
+bash scripts/release.sh --dry-run  # preview after committing and pushing main
+bash scripts/release.sh            # v0.0.1 first, then increment the latest patch
+bash scripts/release.sh v0.1.0      # choose an explicit stable version
 ```
+
+The release script requires a clean checkout of `main` matching `origin/main`.
+It reads the remote tags to choose the next stable version and pushes only that
+tag. If a push fails, retry with the version printed by the script; its local
+tag is retained. Published tags and tags for other commits are not replaced.
 
 The tag starts `cd.yaml`, which runs CI, builds all seven archives with
 `scripts/package.sh`, checks `SHA256SUMS`, and publishes the GitHub Release.
 For a local package build, install the panel dependencies with
-`scripts/web.sh install` and run `VERSION=v1.2.0 scripts/package.sh`.
+`scripts/web.sh install` and run `VERSION=v0.0.1 scripts/package.sh`.
 
 The installer asks GitHub for the latest release, which leaves out drafts and
 pre-releases, so a release is what it installs by default only once it is
