@@ -3396,7 +3396,7 @@ test.describe("the panel", () => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
         await page.goto("/overview");
-        await page.getByRole("button", { name: "Logs" }).click();
+        await page.getByRole("button", { name: "Logs", exact: true }).click();
 
         const logs = page.getByRole("dialog");
 

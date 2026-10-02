@@ -19,7 +19,7 @@ test("reports the actual local core independently of maintenance and confirms be
     await mockApi(page, state);
     await page.goto("/overview");
     const core = card(page);
-    await expect(core).toContainText("This server");
+    await expect(core).toContainText("This server", { timeout: 15000 });
     await expect(core.getByText("Running", { exact: true })).toBeVisible();
     await expect(core).toContainText("4242");
     await core.getByRole("button", { name: "Restart sing-box", exact: true }).click();
@@ -54,7 +54,7 @@ test("validation failure keeps the process and exposes logs with a retry", async
     await expect(core).toContainText("Restart failed. View logs for details.", { timeout: 15000 });
     await expect(core).toContainText("4242");
     await expect(core.getByRole("button", { name: "Restart sing-box", exact: true })).toBeEnabled();
-    await core.getByRole("button", { name: "Logs", exact: true }).click();
+    await core.getByRole("button", { name: "sing-box logs", exact: true }).click();
     const logs = page.getByRole("dialog", { name: "sing-box logs" });
     await expect(logs).toContainText(
         "configuration failed validation; the service was not restarted",

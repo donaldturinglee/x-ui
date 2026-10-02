@@ -114,6 +114,7 @@ export const CoreInfoTile = () => {
                     </Button>
                     <Button
                         type="button"
+                        aria-label="sing-box logs"
                         disabled={!data || data.state === "unavailable"}
                         onClick={() => setShowLogs(true)}
                     >
