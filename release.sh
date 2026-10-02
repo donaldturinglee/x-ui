@@ -3,9 +3,9 @@
 # Push a release tag, starting at v0.0.1 and increasing the patch version.
 #
 # Usage:
-#   bash scripts/release.sh                  # next published patch version
-#   bash scripts/release.sh v0.1.0           # choose a new version
-#   bash scripts/release.sh --dry-run        # check and preview without tagging
+#   bash release.sh                  # next published patch version
+#   bash release.sh v0.1.0           # choose a new version
+#   bash release.sh --dry-run        # check and preview without tagging
 #
 # Run after committing and pushing main. The existing tag workflow runs CI,
 # builds the archives and publishes the GitHub Release. No GitHub CLI is needed.
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: bash scripts/release.sh [--dry-run] [vMAJOR.MINOR.PATCH]"
+  echo "Usage: bash release.sh [--dry-run] [vMAJOR.MINOR.PATCH]"
   echo "Without a version, start at v0.0.1 or increment the latest remote patch."
 }
 
@@ -38,7 +38,7 @@ if [[ -n "${version}" && ! "${version}" =~ ${version_pattern} ]]; then
   fail "Use a version such as v0.0.1, without leading zeroes or a suffix."
 fi
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")"
 [[ "$(git rev-parse --is-inside-work-tree)" == true ]] || fail "Run from an x-ui checkout."
 [[ "$(git symbolic-ref --quiet --short HEAD || true)" == main ]] || fail "Release from the main branch."
 [[ -z "$(git status --porcelain)" ]] || fail "Commit or remove uncommitted changes before releasing."
@@ -88,7 +88,7 @@ if [[ "${reuse_tag}" == false ]]; then
 fi
 if ! git push origin "refs/tags/${version}:refs/tags/${version}"; then
   echo "Push failed; the local ${version} tag was retained." >&2
-  echo "Retry: bash scripts/release.sh ${version}" >&2
+  echo "Retry: bash release.sh ${version}" >&2
   exit 1
 fi
 echo "Pushed ${version}. Follow Continuous deployment in GitHub Actions for the release result."

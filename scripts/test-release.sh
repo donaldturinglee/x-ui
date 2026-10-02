@@ -33,9 +33,8 @@ checks=0
 
 git init --quiet --bare --initial-branch=main "${remote}"
 git init --quiet --initial-branch=main "${fixture}"
-mkdir "${fixture}/scripts"
-cp "${repo}/scripts/release.sh" "${fixture}/scripts/release.sh"
-git -C "${fixture}" add scripts/release.sh
+cp "${repo}/release.sh" "${fixture}/release.sh"
+git -C "${fixture}" add release.sh
 git -C "${fixture}" commit --quiet -m Initial
 git -C "${fixture}" remote add origin "${remote}"
 git -C "${fixture}" push --quiet origin main
@@ -44,7 +43,7 @@ initial="$(git -C "${fixture}" rev-parse HEAD)"
 run_expected() {
   local expected="$1" pattern="$2" result
   shift 2
-  if (cd "${test_parent}" && bash "${fixture}/scripts/release.sh" "$@") >"${log}" 2>&1; then result=0; else result=$?; fi
+  if (cd "${test_parent}" && bash "${fixture}/release.sh" "$@") >"${log}" 2>&1; then result=0; else result=$?; fi
   if [[ "${result}" -ne "${expected}" ]] || ! grep -Fq -- "${pattern}" "${log}"; then
     cat "${log}" >&2
     echo "Release check failed: ${pattern} (exit ${result}, expected ${expected})" >&2
@@ -58,7 +57,7 @@ publish_fixture_tag() {
   git -C "${fixture}" push --quiet origin "refs/tags/$1:refs/tags/$1"
 }
 
-bash -n "${repo}/scripts/release.sh"
+bash -n "${repo}/release.sh"
 run_expected 0 'Usage:' --help
 run_expected 1 'Unknown option:' --unknown
 run_expected 1 'Specify at most one' v0.0.1 v0.0.2
@@ -85,9 +84,9 @@ publish_fixture_tag v0.0.9
 run_expected 0 'Release version: v0.0.11' --dry-run
 
 # Refuse tracked edits, untracked files, other branches and detached HEAD.
-echo '# uncommitted' >>"${fixture}/scripts/release.sh"
+echo '# uncommitted' >>"${fixture}/release.sh"
 run_expected 1 'uncommitted changes' --dry-run
-git -C "${fixture}" restore scripts/release.sh
+git -C "${fixture}" restore release.sh
 touch "${fixture}/untracked"
 run_expected 1 'uncommitted changes' --dry-run
 rm -f -- "${fixture}/untracked"
@@ -116,7 +115,7 @@ cat >"${remote}/hooks/pre-receive" <<'EOF'
 exit 1
 EOF
 chmod +x "${remote}/hooks/pre-receive"
-run_expected 1 'Retry: bash scripts/release.sh v0.1.0' v0.1.0
+run_expected 1 'Retry: bash release.sh v0.1.0' v0.1.0
 pending="$(git -C "${fixture}" rev-parse refs/tags/v0.1.0)"
 [[ -z "$(git --git-dir="${remote}" tag --list v0.1.0)" ]]
 rm -f -- "${remote}/hooks/pre-receive"

@@ -29,6 +29,13 @@ for script in scripts/*.sh; do
 done
 
 echo
+echo "Repository root:"
+for script in install.sh release.sh x-ui.sh; do
+  summary="$(sed -n '3s/^# \{0,1\}//p' "${script}")"
+  printf "  %-14s %s\n" "${script}" "${summary}"
+done
+
+echo
 echo "Every script carries a usage block at the top of the file. Configuration is"
 echo "read from X_UI_CONFIG_DIR (default: configs), and any X_UI_*"
 echo "variable overrides what configs/config.yaml says."
