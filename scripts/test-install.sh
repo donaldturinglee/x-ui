@@ -32,9 +32,218 @@ if bash "${repo}/install.sh" --with-node >"${test_root}/removed-option.log" 2>&1
 fi
 grep -q 'Unknown option' "${test_root}/removed-option.log"
 
-# Only source function definitions. The host/CPU checks and entry point are
-# intentionally excluded; all paths below belong to this private test root.
-awk '/^enable_service\(\)/ { copying=1 } /^echo -e .*Executing/ { exit } copying { print }' "${repo}/install.sh" >"${test_root}/installer-functions.sh"
+# Only source function definitions; the entry point is tested separately with
+# fake host checks. All writable paths belong to this private test root.
+awk '/^check_install_host\(\)/ { copying=1 } /^echo -e .*Executing/ { exit } copying { print }' "${repo}/install.sh" >"${test_root}/installer-functions.sh"
+awk '/^echo -e .*Executing/ { copying=1 } copying { print }' "${repo}/install.sh" >"${test_root}/installer-entry.sh"
+
+cat >"${test_root}/run-dependency-checks.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${X_UI_TEST_ROOT}/installer-functions.sh"
+red='' green='' yellow='' plain=''
+checks=0
+fail() { echo "Dependency check failed: $*" >&2; exit 1; }
+reset_fixture() {
+  release=debian release_like='' packager=apt
+  available_managers=(apt-get dnf yum zypper pacman)
+  unavailable_commands=()
+  package_calls=()
+  ca_installed=true trust_bundle_ready=true
+  fail_index=false fail_install=false keep_missing=false
+  install_repairs_ca=true fail_ca_refresh=false
+}
+# Model availability independently of the packages the installer selects.
+# Every package operation below is a shell function, never a host command.
+command() {
+  if [[ "${1:-}" != -v ]]; then builtin command "$@"; return; fi
+  local name="$2" item
+  for item in "${unavailable_commands[@]}"; do
+    if [[ "${name}" == "${item}" ]]; then return 1; fi
+  done
+  case "${name}" in
+    apt-get | dnf | yum | zypper | pacman)
+      for item in "${available_managers[@]}"; do
+        if [[ "${name}" == "${item}" ]]; then printf '/fixture/%s\n' "${name}"; return 0; fi
+      done
+      return 1 ;;
+  esac
+  printf '/fixture/%s\n' "${name}"
+}
+ca_trust_bundle_ready() { [[ "${trust_bundle_ready}" == true ]]; }
+dpkg-query() { [[ "${ca_installed}" == true ]] && printf 'install ok installed'; }
+rpm() { [[ "${ca_installed}" == true ]]; }
+package_action() {
+  local manager="$1"
+  shift
+  package_calls+=("${manager} $*")
+  case " $* " in
+    *' update '* | *' refresh '*) [[ "${fail_index}" == false ]]; return ;;
+  esac
+  if [[ "${fail_install}" == true ]]; then return 19; fi
+  if [[ "${keep_missing}" == false ]]; then unavailable_commands=(); fi
+  ca_installed=true
+  if [[ "${install_repairs_ca}" == true ]]; then trust_bundle_ready=true; fi
+}
+apt-get() { package_action apt-get "$@"; }
+dnf() { package_action dnf "$@"; }
+yum() { package_action yum "$@"; }
+zypper() { package_action zypper "$@"; }
+pacman() {
+  if [[ "${1:-}" == -Q ]]; then [[ "${ca_installed}" == true ]]; return; fi
+  package_action pacman "$@"
+}
+update-ca-certificates() {
+  package_calls+=("update-ca-certificates $*")
+  if [[ "${fail_ca_refresh}" == true ]]; then return 21; fi
+  trust_bundle_ready=true
+}
+update-ca-trust() {
+  package_calls+=("update-ca-trust $*")
+  if [[ "${fail_ca_refresh}" == true ]]; then return 21; fi
+  trust_bundle_ready=true
+}
+assert_calls() {
+  local expected i=0
+  [[ ${#package_calls[@]} -eq $# ]] || fail "unexpected operations: ${package_calls[*]}"
+  for expected in "$@"; do
+    [[ "${package_calls[i]}" == "${expected}" ]] || fail "expected '${expected}', got '${package_calls[i]}'"
+    i=$((i + 1))
+  done
+  checks=$((checks + 1))
+}
+
+# ID wins even when all package managers exist. Unknown derivatives use the
+# ordered ID_LIKE families; a missing native manager must not choose a foreign one.
+for distribution in debian ubuntu fedora rhel centos rocky almalinux ol amzn opensuse-leap opensuse-tumbleweed suse sles sled arch manjaro endeavouros; do
+  reset_fixture
+  release="${distribution}"
+  release_like='debian'
+  detect_package_manager
+  case "${distribution}" in
+    debian | ubuntu) expected=apt ;;
+    opensuse* | suse | sles | sled) expected=zypper ;;
+    arch | manjaro | endeavouros) expected=pacman ;;
+    *) expected=dnf ;;
+  esac
+  [[ "${packager}" == "${expected}" ]] || fail "wrong manager for ${distribution}: ${packager}"
+  checks=$((checks + 1))
+done
+reset_fixture
+release=derivative release_like='unknown ubuntu debian rhel'
+detect_package_manager
+[[ "${packager}" == apt ]] || fail 'ID_LIKE order was ignored'
+reset_fixture
+release=centos available_managers=(apt-get yum zypper pacman)
+detect_package_manager
+[[ "${packager}" == yum ]] || fail 'legacy RPM host did not use yum'
+reset_fixture
+release=unknown
+if detect_package_manager >"${X_UI_TEST_ROOT}/unknown-distro.log" 2>&1; then fail 'unknown distribution accepted'; fi
+reset_fixture
+release=ubuntu release_like=rhel available_managers=(dnf)
+if detect_package_manager >"${X_UI_TEST_ROOT}/missing-manager.log" 2>&1; then fail 'foreign manager fallback accepted'; fi
+assert_calls
+
+# All dependencies ready: no index refresh or install on any backend.
+for manager in apt dnf yum zypper pacman; do
+  reset_fixture
+  packager="${manager}"
+  install_base
+  assert_calls
+done
+
+# Missing commands select and deduplicate the exact native packages. Neither
+# a working awk nor guaranteed Bash/curl is replaced (including curl-minimal).
+for manager in apt dnf yum zypper pacman; do
+  reset_fixture
+  packager="${manager}"
+  unavailable_commands=(tar gzip awk sha256sum uname mktemp install od tr grep sed flock su psql pg_dump pg_restore)
+  ca_installed=false trust_bundle_ready=false
+  install_base
+  case "${manager}" in
+    apt) assert_calls 'apt-get update -q' 'apt-get install -y -q tar gzip gawk coreutils grep sed util-linux postgresql-client ca-certificates' ;;
+    dnf | yum) assert_calls "${manager} install -y -q tar gzip gawk coreutils grep sed util-linux postgresql ca-certificates" ;;
+    zypper) assert_calls 'zypper -q refresh' 'zypper -q install -y tar gzip gawk coreutils grep sed util-linux postgresql ca-certificates-mozilla' ;;
+    pacman) assert_calls 'pacman -Syu --noconfirm --needed tar gzip gawk coreutils grep sed util-linux postgresql ca-certificates' ;;
+  esac
+  # A second run must neither refresh indexes nor reinstall packages.
+  package_calls=()
+  install_base
+  assert_calls
+done
+reset_fixture
+unavailable_commands=(sha256sum uname od)
+install_base
+assert_calls 'apt-get update -q' 'apt-get install -y -q coreutils'
+reset_fixture
+X_UI_DATABASE_URL='postgres://external.invalid/x_ui?sslmode=require'
+unavailable_commands=(psql pg_dump pg_restore)
+install_postgresql() { fail 'external database caused server installation'; }
+setup_local_database() { fail 'external database caused local initialization'; }
+install_base
+assert_calls 'apt-get update -q' 'apt-get install -y -q postgresql-client'
+unset X_UI_DATABASE_URL
+
+# An installed CA package with a missing bundle still requires repair.
+for manager in apt dnf yum zypper pacman; do
+  reset_fixture
+  packager="${manager}"
+  trust_bundle_ready=false install_repairs_ca=false
+  install_base
+  case "${manager}" in
+    apt) assert_calls 'apt-get update -q' 'apt-get install -y -q ca-certificates' 'update-ca-certificates ' ;;
+    dnf | yum) assert_calls "${manager} install -y -q ca-certificates" 'update-ca-trust extract' ;;
+    zypper) assert_calls 'zypper -q refresh' 'zypper -q install -y ca-certificates-mozilla' 'update-ca-certificates ' ;;
+    pacman) assert_calls 'pacman -Syu --noconfirm --needed ca-certificates' 'update-ca-trust extract' ;;
+  esac
+done
+
+# Explicit error returns must work even inside an if, where errexit is disabled.
+for manager in apt zypper; do
+  reset_fixture
+  packager="${manager}" unavailable_commands=(tar) fail_index=true
+  if install_base >"${X_UI_TEST_ROOT}/dependency-index-${manager}.log" 2>&1; then fail 'index failure ignored'; fi
+  if [[ "${manager}" == apt ]]; then assert_calls 'apt-get update -q'; else assert_calls 'zypper -q refresh'; fi
+done
+for manager in apt dnf yum zypper pacman; do
+  reset_fixture
+  packager="${manager}" unavailable_commands=(tar) fail_install=true
+  if install_base >"${X_UI_TEST_ROOT}/dependency-install-${manager}.log" 2>&1; then fail 'package failure ignored'; fi
+  checks=$((checks + 1))
+done
+reset_fixture
+unavailable_commands=(tar) keep_missing=true
+if install_base >"${X_UI_TEST_ROOT}/dependency-verify.log" 2>&1; then fail 'missing command after success ignored'; fi
+reset_fixture
+trust_bundle_ready=false install_repairs_ca=false fail_ca_refresh=true
+if install_base >"${X_UI_TEST_ROOT}/dependency-ca.log" 2>&1; then fail 'CA refresh failure ignored'; fi
+
+# Run the real entry point in a separate process. A package failure must stop
+# before architecture detection, release downloads or panel replacement.
+cat >"${X_UI_TEST_ROOT}/run-failing-preparation.sh" <<'INNER'
+#!/usr/bin/env bash
+set -euo pipefail
+source "${X_UI_TEST_ROOT}/installer-functions.sh"
+red='' green='' yellow='' plain='' release_tag=''
+check_install_host() { release=debian; packager=apt; }
+ca_certificates_ready() { return 0; }
+command() {
+  if [[ "${1:-}" == -v && "$2" == tar ]]; then return 1; fi
+  if [[ "${1:-}" == -v ]]; then return 0; fi
+  builtin command "$@"
+}
+apt-get() { [[ "$1" == update ]]; }
+detect_architecture() { touch "${X_UI_TEST_ROOT}/preparation-proceeded"; }
+install_x_ui() { touch "${X_UI_TEST_ROOT}/preparation-proceeded"; }
+source "${X_UI_TEST_ROOT}/installer-entry.sh"
+INNER
+if bash "${X_UI_TEST_ROOT}/run-failing-preparation.sh" >"${X_UI_TEST_ROOT}/dependency-entry.log" 2>&1; then fail 'entry point ignored preparation failure'; fi
+[[ ! -e "${X_UI_TEST_ROOT}/preparation-proceeded" ]] || fail 'entry point continued after preparation failure'
+echo "Dependency regression checks passed (${checks} checks: distribution selection, missing-only installation, CA repair, external database clients and early failure)."
+EOF
+bash "${test_root}/run-dependency-checks.sh" >"${test_root}/dependencies.log" 2>&1
+cat "${test_root}/dependencies.log"
 
 cat >"${test_root}/tools/systemctl" <<'EOF'
 #!/usr/bin/env bash

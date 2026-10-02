@@ -78,84 +78,80 @@ for arg in "$@"; do
   esac
 done
 
-# check root
-if [[ ${EUID} -ne 0 ]]; then
-  echo -e "${red}Please run this script with root privilege${plain}\n"
-  exit 1
-fi
-
-# Check OS and set release variable
-if [[ -f /etc/os-release ]]; then
-  source /etc/os-release
-elif [[ -f /usr/lib/os-release ]]; then
-  source /usr/lib/os-release
-else
-  echo -e "${red}Failed to check the system OS, please contact the author!${plain}" >&2
-  exit 1
-fi
-release="${ID:-unknown}"
-echo -e "The OS release is: ${release}"
-
-# Detect the init system (systemd vs OpenRC used by Alpine)
-if [[ "${release}" == "alpine" ]]; then
-  init_system="openrc"
-elif command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+check_install_host() {
+  if [[ ${EUID} -ne 0 ]]; then
+    echo -e "${red}Please run this script with root privilege${plain}" >&2
+    return 1
+  fi
+  local ID="" ID_LIKE=""
+  if [[ -f /etc/os-release ]]; then
+    source /etc/os-release
+  elif [[ -f /usr/lib/os-release ]]; then
+    source /usr/lib/os-release
+  else
+    echo -e "${red}Cannot identify this host: os-release is missing${plain}" >&2
+    return 1
+  fi
+  release="${ID:-unknown}"
+  release_like="${ID_LIKE:-}"
+  echo "The OS release is: ${release}"
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    echo -e "${red}The complete panel and node installation requires systemd on this host${plain}" >&2
+    return 1
+  fi
   init_system="systemd"
-elif command -v rc-service >/dev/null 2>&1; then
-  init_system="openrc"
-else
-  init_system="systemd"
-fi
+  detect_package_manager || return 1
+  # Reject unsupported node platforms before changing packages or services.
+  if ! command -v sing-box >/dev/null 2>&1 && [[ "${packager}" != "apt" && "${packager}" != "dnf" ]]; then
+    echo -e "${red}Automatic sing-box installation requires APT or DNF; install a compatible sing-box systemd package before retrying${plain}" >&2
+    return 1
+  fi
+}
 
-if [[ "${init_system}" != "systemd" || ! -d /run/systemd/system ]]; then
-  echo -e "${red}The complete panel and node installation requires systemd on this host${plain}" >&2
-  exit 1
-fi
+detect_package_manager() {
+  local family manager="" families=()
+  packager=""
+  # Prefer ID, then the ordered ID_LIKE families. An unrelated package manager
+  # on PATH must not determine how this distribution's packages are installed.
+  read -r -a families <<<"${release} ${release_like:-}"
+  for family in "${families[@]}"; do
+    case "${family}" in
+      debian | ubuntu) packager="apt"; manager="apt-get" ;;
+      fedora | rhel | centos | rocky | almalinux | ol | amzn)
+        if command -v dnf >/dev/null 2>&1; then
+          packager="dnf"; manager="dnf"
+        else
+          packager="yum"; manager="yum"
+        fi
+        ;;
+      opensuse* | suse | sles | sled) packager="zypper"; manager="zypper" ;;
+      arch | archlinux | manjaro | endeavouros) packager="pacman"; manager="pacman" ;;
+      *) continue ;;
+    esac
+    if ! command -v "${manager}" >/dev/null 2>&1; then
+      dependency_error "native package manager ${manager} is missing"
+      return 1
+    fi
+    return 0
+  done
+  dependency_error "unsupported distribution (ID_LIKE=${release_like:-none})"
+  return 1
+}
 
-# The package manager decides the commands below, so it is what they are chosen
-# by. A list of distribution names misses the rebuilds and derivatives that run
-# the same one -- Oracle Linux calls itself "ol", Amazon Linux "amzn".
-if command -v apt-get >/dev/null 2>&1; then
-  packager="apt"
-elif command -v dnf >/dev/null 2>&1; then
-  packager="dnf"
-elif command -v yum >/dev/null 2>&1; then
-  packager="yum"
-elif command -v zypper >/dev/null 2>&1; then
-  packager="zypper"
-elif command -v pacman >/dev/null 2>&1; then
-  packager="pacman"
-elif command -v apk >/dev/null 2>&1; then
-  packager="apk"
-else
-  echo -e "${red}No supported package manager was found (apt, dnf, yum, zypper, pacman or apk)${plain}" >&2
-  exit 1
-fi
-
-# Check unsupported node platforms before changing packages or panel services.
-if ! command -v sing-box >/dev/null 2>&1 && [[ "${packager}" != "apt" && "${packager}" != "dnf" ]]; then
-  echo -e "${red}Automatic sing-box installation requires APT or DNF; install a compatible sing-box systemd package before retrying${plain}" >&2
-  exit 1
-fi
-
-# Worked out once, here, rather than in a function each download calls: an exit
-# inside $(...) leaves only the subshell, and the install would carry on towards
-# an archive that does not exist. The names are the ones scripts/package.sh
-# gives the archives.
-case "$(uname -m)" in
-  x86_64 | x64 | amd64) arch="amd64" ;;
-  i*86 | x86) arch="386" ;;
-  armv8* | arm64 | aarch64) arch="arm64" ;;
-  armv7* | arm) arch="armv7" ;;
-  armv6*) arch="armv6" ;;
-  armv5*) arch="armv5" ;;
-  s390x) arch="s390x" ;;
-  *)
-    echo -e "${red}Unsupported CPU architecture!${plain}" >&2
-    exit 1
-    ;;
-esac
-echo "arch: ${arch}"
+detect_architecture() {
+  # Run after dependency preparation, so uname is available on minimal hosts.
+  case "$(uname -m)" in
+    x86_64 | x64 | amd64) arch="amd64" ;;
+    i*86 | x86) arch="386" ;;
+    armv8* | arm64 | aarch64) arch="arm64" ;;
+    armv7* | arm) arch="armv7" ;;
+    armv6*) arch="armv6" ;;
+    armv5*) arch="armv5" ;;
+    s390x) arch="s390x" ;;
+    *) echo -e "${red}Unsupported CPU architecture!${plain}" >&2; return 1 ;;
+  esac
+  echo "arch: ${arch}"
+}
 
 # Services are enabled, started and stopped through these, so the steps below
 # read the same under systemd and OpenRC.
@@ -295,41 +291,140 @@ set_config() {
   )
 }
 
-install_base() {
-  echo -e "${yellow}Installing required packages...${plain}"
-  # What the installer itself runs on: the downloads, the unpacking, awk to
-  # check them with, and the certificates the connections are checked with --
-  # none of them a given on a minimal image, where openSUSE's has no awk. Only
-  # the package indexes are refreshed: nothing already on the host is upgraded,
-  # except on Arch, where installing anything without a full upgrade is
-  # unsupported.
+dependency_error() {
+  echo -e "${red}Dependency preparation failed on ${release} (${packager:-unknown}): $*${plain}" >&2
+}
+
+add_dependency_package() {
+  # Package names contain no whitespace. The default expansion also handles
+  # empty arrays under nounset on older Bash versions used by YUM hosts.
+  if [[ " ${missing_packages[*]-} " != *" $1 "* ]]; then
+    missing_packages+=("$1")
+  fi
+}
+
+require_dependency_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    missing_dependencies+=("$1")
+    add_dependency_package "$2"
+  fi
+}
+
+native_package_installed() {
+  case "${packager}" in
+    apt) [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" == "install ok installed" ]] ;;
+    dnf | yum | zypper) rpm -q "$1" >/dev/null 2>&1 ;;
+    pacman) pacman -Q "$1" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+ca_trust_bundle_ready() {
+  local bundle
+  local bundles=(/etc/ssl/certs/ca-certificates.crt)
+  case "${packager}" in
+    dnf | yum) bundles=(/etc/pki/tls/certs/ca-bundle.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem) ;;
+    zypper) bundles=(/etc/ssl/ca-bundle.pem /var/lib/ca-certificates/ca-bundle.pem) ;;
+  esac
+  for bundle in "${bundles[@]}"; do
+    if [[ -r "${bundle}" && -s "${bundle}" ]]; then return 0; fi
+  done
+  return 1
+}
+
+ca_certificates_ready() {
+  native_package_installed "${ca_package}" && ca_trust_bundle_ready
+}
+
+collect_missing_dependencies() {
+  local tool postgres_package="postgresql"
+  missing_packages=()
+  missing_dependencies=()
+  ca_package="ca-certificates"
+  if [[ "${packager}" == apt ]]; then postgres_package="postgresql-client"; fi
+  if [[ "${packager}" == zypper ]]; then ca_package="ca-certificates-mozilla"; fi
+  require_dependency_command tar tar
+  require_dependency_command gzip gzip
+  # Any existing awk (including mawk) is sufficient; do not replace it.
+  require_dependency_command awk gawk
+  for tool in basename cat chmod chown cp date df dirname id install mkdir mktemp mv od realpath rm sha256sum sleep tail touch tr uname; do
+    require_dependency_command "${tool}" coreutils
+  done
+  require_dependency_command grep grep
+  require_dependency_command sed sed
+  require_dependency_command flock util-linux
+  require_dependency_command su util-linux
+  # These are needed for backup/restore even with an external database. Server
+  # initialization and service changes remain part of local database setup.
+  for tool in psql pg_dump pg_restore; do
+    require_dependency_command "${tool}" "${postgres_package}"
+  done
+  if ! ca_certificates_ready; then
+    missing_dependencies+=("CA certificates")
+    add_dependency_package "${ca_package}"
+  fi
+}
+
+install_dependency_packages() {
+  # Only refresh indexes when packages are needed. Arch's supported install
+  # procedure includes a full upgrade to avoid partial system upgrades.
   case "${packager}" in
     apt)
-      # Every question debconf would ask has the right default here, and asking
-      # one mid-install would read the answer meant for this script.
-      apt-get update -q
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -q curl tar ca-certificates postgresql-client util-linux
+      if ! apt-get update -q; then dependency_error "package index refresh failed"; return 1; fi
+      if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${missing_packages[@]}"; then
+        dependency_error "package installation failed: ${missing_packages[*]}"; return 1
+      fi
       ;;
     dnf | yum)
-      # The RHEL 9 family ships curl-minimal, which conflicts with curl.
-      command -v curl >/dev/null 2>&1 || "${packager}" install -y -q curl
-      "${packager}" install -y -q tar gzip gawk ca-certificates postgresql util-linux
+      if ! "${packager}" install -y -q "${missing_packages[@]}"; then
+        dependency_error "package installation failed: ${missing_packages[*]}"; return 1
+      fi
       ;;
     zypper)
-      # ca-certificates is only the framework here; the certificates are in
-      # ca-certificates-mozilla.
-      zypper -q refresh
-      zypper -q install -y curl tar gzip gawk ca-certificates-mozilla postgresql util-linux
+      if ! zypper -q refresh; then dependency_error "package index refresh failed"; return 1; fi
+      if ! zypper -q install -y "${missing_packages[@]}"; then
+        dependency_error "package installation failed: ${missing_packages[*]}"; return 1
+      fi
       ;;
     pacman)
-      pacman -Syu --noconfirm --needed curl tar gzip gawk ca-certificates postgresql util-linux
+      if ! pacman -Syu --noconfirm --needed "${missing_packages[@]}"; then
+        dependency_error "package installation failed: ${missing_packages[*]}"; return 1
+      fi
       ;;
-    apk)
-      # bash to run this script, and OpenRC to run the services.
-      apk update
-      apk add --no-cache curl tar ca-certificates bash openrc util-linux
-      ;;
+    *) dependency_error "unsupported package manager"; return 1 ;;
   esac
+}
+
+refresh_ca_certificates() {
+  local updater="update-ca-certificates" args=()
+  if [[ "${packager}" == dnf || "${packager}" == yum || "${packager}" == pacman ]]; then
+    updater="update-ca-trust"
+    args=(extract)
+  fi
+  if ! command -v "${updater}" >/dev/null 2>&1 || ! "${updater}" ${args[@]+"${args[@]}"}; then
+    dependency_error "CA trust store refresh failed (${updater})"
+    return 1
+  fi
+}
+
+verify_dependencies() {
+  collect_missing_dependencies
+  if [[ -n "${missing_dependencies[*]-}" ]]; then
+    dependency_error "still missing after installation: ${missing_dependencies[*]}"
+    return 1
+  fi
+}
+
+install_base() {
+  collect_missing_dependencies
+  if [[ -z "${missing_packages[*]-}" ]]; then
+    echo -e "${green}Required dependencies are already available${plain}"
+    return 0
+  fi
+  echo -e "${yellow}Installing missing packages with ${packager}: ${missing_packages[*]}${plain}"
+  install_dependency_packages || return 1
+  if ! ca_certificates_ready; then refresh_ca_certificates || return 1; fi
+  verify_dependencies || return 1
 }
 
 # as_postgres runs a command as the postgres superuser: the one account a
@@ -1219,7 +1314,9 @@ install_x_ui() {
 }
 
 echo -e "${green}Executing...${plain}"
+check_install_host
 install_base
+detect_architecture
 if [[ -n "${release_tag}" ]]; then
   install_x_ui "${release_tag}"
 else
