@@ -446,18 +446,31 @@ signed-in operator.
   Panel fields and the file revision the draft started from. It validates the
   candidate, preserves other YAML fields and comments, and replaces the file
   atomically with its existing permissions. Environment overrides are locked;
-  stale saves are refused. The API and worker are restarted by whatever runs
-  them to apply changes. Relative assets and a server-supplied document base
+  stale saves are refused. Restart & Apply queues a persisted systemd task
+  through `/settings/apply`, confirming every pending Panel and Subscription
+  scope with the same file revision. API and worker restart together; their
+  process records, Panel health and the enabled subscription listener must all
+  match before the rollback checkpoint advances. Failure restores only the
+  confirmed editable fields and preserves other options and secrets. A locally
+  managed agent is refreshed only when its Panel connection changes. Relative
+  assets and a server-supplied document base
   keep the router and API aligned with an edited Web path. It says so when
   no session secret is configured, since every session then ends with the
   process.
-- **Subscription** is where subscribers fetch it and how often their
-  applications fetch it again along the top, the address given the room it
-  needs, how it is written for them under that, and under those the
-  subscription listener as the configuration sets it. The address is set there
-  too, so it is shown rather than changed. The reference's tabs of extensions
-  to the JSON and Clash subscriptions are left out: this panel renders those
-  without any.
+- **Subscription** has two independent forms. Subscription content saves the
+  refresh interval, Base64 encoding and quota/expiry display to the database;
+  those options take effect immediately and Restore defaults changes only
+  those keys. Subscription service edits enablement, address, port, path,
+  domain, certificate/key paths, public URL and trusted proxies through
+  `/settings/subscription`. It uses the same lock and revision as Panel,
+  preserves unrelated YAML, and locks fields supplied by the environment.
+  Current and candidate subscription URIs are displayed separately; the
+  public URL can include a reverse proxy prefix, to which the subscription
+  path is appended. Service changes require Save followed by Restart & Apply.
+  Its confirmation lists pending changes from both pages, and reconnection
+  links preserve the Subscription tab if the Panel address changes. The
+  reference's JSON and Clash extension tabs are left out: this panel renders
+  those formats without any.
 - **Two-factor authentication** is the signed-in operator's own, as their
   credentials are; another operator's is theirs to turn on. Turning it on is
   three steps in one place -- a QR code of the secret (or the secret itself, in
@@ -1157,6 +1170,55 @@ configuration. The capability is unavailable for unsupported service launch
 arguments, unmanaged agents or missing native statistics. Panel configuration,
 API/worker processes, agent credentials and remote nodes are not changed by
 the core restart task.
+
+Overview's **Upgrade** dialog uses `GET /upgrade` for cached release metadata
+and capability, `POST /upgrade/check` to refresh it, `POST /upgrade` to confirm
+the check ID/current version/config revision, and `GET /upgrade/jobs/:id` for
+persisted progress. Session and token authentication apply to all four routes.
+Checks expire after ten minutes. Only newer stable semantic versions from
+`donaldturinglee/x-ui` are eligible; a failed check is distinct from up to date.
+The release ID, archive ID, metadata and SHA256SUMS checksum are pinned and
+revalidated at queue time and before downloading. Archive extraction rejects
+links, traversal, duplicate paths, unexpected files and oversized packages.
+`scripts/package.sh` includes a version/platform/upgradeProtocol=1 manifest.
+
+Automatic upgrade supports the standard root-managed Linux/systemd layout
+with one API/worker installation using a dedicated database. Custom unit
+commands, drop-ins, per-unit Panel environment settings, web/migration paths
+and unmanaged agents require deployment through their process manager.
+The API, worker, CLI, web panel, migrations, menu and managed unit files are
+updated; a managed local agent and its reload helper are updated together.
+Configuration, account/session secrets, node credentials, sing-box and remote
+nodes keep their existing state. Pending Panel/Subscription changes must first
+be applied explicitly.
+
+A copied CLI runner and root-private task/backup records live under
+`/var/lib/x-ui/upgrade/jobs/<id>`, outside the installation. An independent
+systemd task downloads, verifies, checks tools/free space and stages replacement
+trees before stopping services. It saves the managed files and configuration,
+stops API/worker/local agent, takes a complete PostgreSQL archive including the
+schema, runs the new migrations, replaces the managed files and restarts them.
+Readiness verifies service PIDs, startup time, version/database fingerprints,
+effective settings, Panel/static liveness and the enabled Subscription listener.
+Failure restores the complete database before old programs are restarted.
+Configuration snapshots are retained for recovery; upgrades never overwrite
+the live configuration tree or its lock files. Terminal states distinguish
+success, verified rollback and failure needing manual recovery.
+
+The host maintenance gate/reservation/execution lock lives outside the install
+tree at `/var/lib/x-ui/maintenance`. Configuration apply, Core restart, upgrade,
+configuration saves and backup restore coordinate through it. Other HTTP writes
+and worker cron jobs share the gate, so normal writes can run concurrently but
+a maintenance reservation cannot race an admitted write. The installer holds
+the exclusive gate and passes its descriptor to CLI children.
+Each queued task reserves the host before the helper starts. An interrupted
+upgrade resumes rollback rather than repeating an uncertain migration; failed
+recovery keeps the reservation and services stopped. `x-ui-cli upgrade-resume`
+retries it using the retained database and file backup. The enabled recovery
+oneshot uses `/var/lib/x-ui/upgrade/recovery-cli` after reboot, independent of
+the installed CLI. Backups and task records are retained for operator cleanup.
+The browser remembers the task ID, tolerates reconnect failures and reloads
+its bundle once after the new running version and task success are confirmed.
 
 That line is why the address subscribers fetch from is `subscription.public_url`
 in the file rather than a row in the table. It belongs beside the port, path,

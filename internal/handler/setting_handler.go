@@ -18,16 +18,18 @@ import (
 // panel. Startup options are saved separately to configs/config.yaml and take
 // effect when the API and worker are restarted.
 type SettingHandler struct {
-	settings *service.SettingService
-	telegram *service.TelegramService
-	startup  config.Shown
-	panel    *service.PanelSettingsService
-	restart  *service.PanelRestartService
+	settings     *service.SettingService
+	telegram     *service.TelegramService
+	startup      config.Shown
+	panel        *service.PanelSettingsService
+	subscription *service.SubscriptionSettingsService
+	restart      *service.PanelRestartService
 }
 
 func NewSettingHandler(settings *service.SettingService, telegram *service.TelegramService, cfg *config.Config) *SettingHandler {
 	panel := service.NewPanelSettingsService(settings, cfg)
-	return &SettingHandler{settings: settings, telegram: telegram, startup: cfg.Shown(), panel: panel, restart: service.NewPanelRestartService(panel)}
+	return &SettingHandler{settings: settings, telegram: telegram, startup: cfg.Shown(), panel: panel,
+		subscription: service.NewSubscriptionSettingsService(panel), restart: service.NewPanelRestartService(panel)}
 }
 
 func (h *SettingHandler) Register(g *gin.RouterGroup) {
@@ -39,6 +41,10 @@ func (h *SettingHandler) Register(g *gin.RouterGroup) {
 	g.POST("/settings/panel", h.savePanelSettings)
 	g.POST("/settings/panel/restart", h.restartPanel)
 	g.GET("/settings/panel/restart/:id", h.panelRestartStatus)
+	g.GET("/settings/subscription", h.subscriptionSettings)
+	g.POST("/settings/subscription", h.saveSubscriptionSettings)
+	g.POST("/settings/apply", h.applySettings)
+	g.GET("/settings/apply/:id", h.panelRestartStatus)
 	g.POST("/telegram/test", h.telegramTest)
 	g.GET("/maintenance", h.getMaintenance)
 	g.POST("/maintenance", h.setMaintenance)
@@ -120,6 +126,69 @@ func (h *SettingHandler) savePanelSettings(c *gin.Context) {
 		return
 	}
 	httputil.Data(c, state)
+}
+
+func subscriptionSettingsResponse(c *gin.Context, state service.SubscriptionSettingsState) {
+	state.SavedURI = state.Saved.PublicBase(requestHost(c))
+	state.RunningURI = state.Running.PublicBase(requestHost(c))
+	c.Header("Cache-Control", "no-store")
+	httputil.Data(c, state)
+}
+
+func (h *SettingHandler) subscriptionSettings(c *gin.Context) {
+	state, err := h.subscription.Read()
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	subscriptionSettingsResponse(c, state)
+}
+
+func (h *SettingHandler) saveSubscriptionSettings(c *gin.Context) {
+	var req struct {
+		Revision string                        `json:"revision"`
+		Values   *service.SubscriptionSettings `json:"values"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		fail(c, domain.Invalidf("Invalid Subscription settings request: %v", err))
+		return
+	}
+	if decoder.Decode(new(any)) != io.EOF || req.Values == nil || len(req.Revision) != 64 {
+		fail(c, domain.Invalidf("Send one settings object with values and the current revision"))
+		return
+	}
+	state, err := h.subscription.Save(c.Request.Context(), middleware.CurrentUser(c), req.Revision, *req.Values)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	subscriptionSettingsResponse(c, state)
+}
+
+func (h *SettingHandler) applySettings(c *gin.Context) {
+	var req struct {
+		Revision string   `json:"revision"`
+		Scopes   []string `json:"scopes"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		fail(c, domain.Invalidf("Send the saved revision and the settings to apply"))
+		return
+	}
+	if decoder.Decode(new(any)) != io.EOF || len(req.Revision) != 64 {
+		fail(c, domain.Invalidf("Send one application request with the saved configuration revision"))
+		return
+	}
+	job, err := h.restart.QueueScopes(c.Request.Context(), middleware.CurrentUser(c), req.Revision, req.Scopes)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusAccepted, httputil.Response{Success: true, Obj: job})
 }
 
 func (h *SettingHandler) restartPanel(c *gin.Context) {

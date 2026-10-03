@@ -1,17 +1,24 @@
-import { Avatar, Button } from "@gamecrafters/base-ui/react";
+import { Avatar, Button, InlineMessage } from "@gamecrafters/base-ui/react";
 import {
     DataBarVerticalRegular,
     DocumentBulletListRegular,
     HistoryRegular,
     StarAddRegular,
 } from "@gamecrafters/base-ui-icons";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { settings } from "@/settings";
 import { useTilesStore } from "@/stores/tiles";
 
 import { useMaintenance } from "./api";
 import { isCoreRestartActive, useCoreStatus } from "./api/core";
+import {
+    isUpgradeActive,
+    upgradeMessage,
+    useUpgradeJob,
+    useUpgradeStatus,
+    useUpgradeTracking,
+} from "./api/upgrade";
 import { CoreInfoTile } from "./components/CoreInfoTile";
 import { BackupDialog } from "./components/BackupDialog";
 import { CountsDialog } from "./components/CountsDialog";
@@ -21,9 +28,10 @@ import { LogsDialog } from "./components/LogsDialog";
 import { PanelInfoTile } from "./components/PanelInfoTile";
 import { SystemInfoTile } from "./components/SystemInfoTile";
 import { TilesDialog } from "./components/TilesDialog";
+import { PanelUpgradeDialog } from "./components/PanelUpgradeDialog";
 import { type TileId } from "./tiles";
 
-type DialogName = "tiles" | "backup" | "logs" | "counts";
+type DialogName = "tiles" | "backup" | "logs" | "counts" | "upgrade";
 
 // A tinted box rather than an outlined one, with the mark standing against the
 // label rather than spaced off it, which is the shape the reference gives the
@@ -63,6 +71,33 @@ export const Overview = () => {
     const tiles = useTilesStore((state) => state.tiles);
     const { data: service } = useMaintenance();
     const { data: core } = useCoreStatus();
+    const { data: upgrade } = useUpgradeStatus();
+    const trackedUpgrade = useUpgradeTracking((state) => state.id);
+    const trackUpgrade = useUpgradeTracking((state) => state.track);
+    const { data: upgradeTask, error: upgradeTaskError } = useUpgradeJob(
+        upgrade?.job?.id ?? trackedUpgrade,
+    );
+    const upgradeJob = upgradeTask ?? upgrade?.job;
+
+    useEffect(() => {
+        if (upgradeJob && isUpgradeActive(upgradeJob) && trackedUpgrade !== upgradeJob.id)
+            trackUpgrade(upgradeJob.id);
+        if (
+            upgradeJob?.state !== "succeeded" ||
+            trackedUpgrade !== upgradeJob.id ||
+            upgrade?.currentVersion !== upgradeJob.toVersion
+        )
+            return;
+        // Reload once after confirmation, so the running panel uses the new bundle.
+        const key = `x-ui-upgrade-reloaded:${upgradeJob.id}`;
+        try {
+            if (sessionStorage.getItem(key)) return;
+            sessionStorage.setItem(key, "1");
+        } catch {
+            return;
+        }
+        window.location.reload();
+    }, [upgradeJob, upgrade?.currentVersion, trackedUpgrade, trackUpgrade]);
 
     const [openDialog, setOpenDialog] = useState<DialogName | null>(null);
 
@@ -70,6 +105,7 @@ export const Overview = () => {
     const backupButton = useRef<HTMLButtonElement>(null);
     const logsButton = useRef<HTMLButtonElement>(null);
     const countsButton = useRef<HTMLButtonElement>(null);
+    const upgradeButton = useRef<HTMLButtonElement>(null);
 
     const close = () => setOpenDialog(null);
 
@@ -98,7 +134,7 @@ export const Overview = () => {
                     </Avatar>
                 </div>
 
-                <div>
+                <div className="flex flex-wrap justify-center gap-2">
                     <Button
                         ref={tilesButton}
                         type="button"
@@ -113,7 +149,7 @@ export const Overview = () => {
                         ref={backupButton}
                         type="button"
                         trailingVisual={<HistoryRegular size={18} />}
-                        className={`${BUTTON_CLASS} ms-[10px]`}
+                        className={BUTTON_CLASS}
                         onClick={() => setOpenDialog("backup")}
                     >
                         Backup &amp; restore
@@ -123,7 +159,7 @@ export const Overview = () => {
                         ref={logsButton}
                         type="button"
                         trailingVisual={<DocumentBulletListRegular size={18} />}
-                        className={`${BUTTON_CLASS} ms-[10px]`}
+                        className={BUTTON_CLASS}
                         onClick={() => setOpenDialog("logs")}
                     >
                         Logs
@@ -133,12 +169,35 @@ export const Overview = () => {
                         ref={countsButton}
                         type="button"
                         trailingVisual={<DataBarVerticalRegular size={18} />}
-                        className={`${BUTTON_CLASS} ms-[10px]`}
+                        className={BUTTON_CLASS}
                         onClick={() => setOpenDialog("counts")}
                     >
                         Counts
                     </Button>
+                    <Button
+                        ref={upgradeButton}
+                        type="button"
+                        className={BUTTON_CLASS}
+                        onClick={() => setOpenDialog("upgrade")}
+                    >
+                        Upgrade
+                    </Button>
                 </div>
+
+                {(isUpgradeActive(upgradeJob) ||
+                    upgradeJob?.needsRecovery ||
+                    (trackedUpgrade && upgradeTaskError)) && (
+                    <InlineMessage variant={upgradeJob?.needsRecovery ? "critical" : "warning"}>
+                        <div role="status">
+                            {upgradeTaskError
+                                ? "Waiting for the panel to reconnect. The upgrade result has not yet been confirmed."
+                                : upgradeMessage(upgradeJob)}
+                        </div>
+                        <Button type="button" onClick={() => setOpenDialog("upgrade")}>
+                            View upgrade
+                        </Button>
+                    </InlineMessage>
+                )}
 
                 {/* Four across on a wide screen, two on a tablet and one on a
                     phone, so a tile is never narrower than the figure in it. */}
@@ -154,6 +213,9 @@ export const Overview = () => {
             {openDialog === "logs" && <LogsDialog onClose={close} returnFocusRef={logsButton} />}
             {openDialog === "counts" && (
                 <CountsDialog onClose={close} returnFocusRef={countsButton} />
+            )}
+            {openDialog === "upgrade" && (
+                <PanelUpgradeDialog onClose={close} returnFocusRef={upgradeButton} />
             )}
         </div>
     );

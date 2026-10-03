@@ -150,6 +150,11 @@ func (s *CoreService) Queue(ctx context.Context, actor string) (*CoreRestartJob,
 	if !s.supported {
 		return nil, domain.Invalidf("%s", s.reason)
 	}
+	gate, err := maintenanceGate(s.directory, "core", "")
+	if err != nil {
+		return nil, err
+	}
+	defer gate()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	unlock, err := acquirePrivateLock(filepath.Join(coreRuntimeDir(s.directory), "queue.lock"))
@@ -182,11 +187,15 @@ func (s *CoreService) Queue(ctx context.Context, actor string) (*CoreRestartJob,
 	if err := writePanelPrivate(filepath.Join(coreRuntimeDir(s.directory), "latest"), []byte(job.ID)); err != nil {
 		return nil, err
 	}
+	if err := maintenanceReserve(s.directory, "core", job.ID); err != nil {
+		return nil, err
+	}
 	if err := s.host.Schedule(ctx, s.directory, job.ID); err != nil {
 		job.State, job.Error = "failed", "The restart task could not be scheduled; sing-box was not restarted."
 		now := time.Now().UTC()
 		job.FinishedAt = &now
 		_ = writePanelJSON(coreJobPath(s.directory, job.ID), job)
+		_ = os.Remove(filepath.Join(maintenanceDir(s.directory), "active.json"))
 		return nil, domain.Invalidf("%s", job.Error)
 	}
 	if s.settings != nil {
@@ -221,6 +230,16 @@ func RunCoreRestart(ctx context.Context, directory, id string) error {
 }
 
 func runCoreRestart(ctx context.Context, directory, id string, host coreHost) error {
+	execution, err := maintenanceExecute(directory, "core", id)
+	if err != nil {
+		return err
+	}
+	defer execution()
+	defer func() {
+		if job, err := readCoreRestart(directory, id); err == nil && !job.active() {
+			_ = maintenanceRelease(directory, "core", id)
+		}
+	}()
 	unlock, err := acquirePrivateLock(filepath.Join(coreRuntimeDir(directory), "execution.lock"))
 	if err != nil {
 		return err

@@ -7,16 +7,20 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"time"
 
 	"github.com/donaldturinglee/x-ui/internal/config"
 )
 
 type PanelProcessRuntime struct {
-	PID       int               `json:"pid"`
-	StartedAt time.Time         `json:"startedAt"`
-	Settings  PanelSettings     `json:"settings"`
-	Overrides map[string]string `json:"overrides,omitempty"`
+	Version          string                `json:"version,omitempty"`
+	DatabaseRevision string                `json:"databaseRevision,omitempty"`
+	PID              int                   `json:"pid"`
+	StartedAt        time.Time             `json:"startedAt"`
+	Settings         PanelSettings         `json:"settings"`
+	Overrides        map[string]string     `json:"overrides,omitempty"`
+	Subscription     *SubscriptionSettings `json:"subscription,omitempty"`
 }
 
 func panelRuntimeDir(directory string) string { return filepath.Join(directory, ".panel-runtime") }
@@ -35,6 +39,14 @@ func acquirePanelLock(directory string) (func(), error) {
 }
 
 func acquirePrivateLock(path string) (func(), error) {
+	return acquirePrivateFileLock(path, false)
+}
+
+func acquirePrivateSharedLock(path string) (func(), error) {
+	return acquirePrivateFileLock(path, true)
+}
+
+func acquirePrivateFileLock(path string, shared bool) (func(), error) {
 	if err := ensurePanelRuntimeDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
@@ -45,7 +57,11 @@ func acquirePrivateLock(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := lockPanelFile(file)
+	lock := lockPanelFile
+	if shared {
+		lock = lockPanelFileShared
+	}
+	unlock, err := lock(file)
 	if err != nil {
 		_ = file.Close()
 		return nil, err
@@ -75,7 +91,22 @@ func writePanelPrivate(path string, data []byte) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), path)
+	if err := os.Rename(file.Name(), path); err != nil {
+		return err
+	}
+	return syncPanelDirectory(filepath.Dir(path))
+}
+
+func syncPanelDirectory(directory string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	file, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
 }
 
 func writePanelJSON(path string, value any) error {
@@ -116,9 +147,24 @@ func RecordPanelProcess(kind string, cfg *config.Config) error {
 			overrides[field.name] = field.env
 		}
 	}
+	var subscription *SubscriptionSettings
+	if kind == "api" {
+		values := subscriptionSettingsOf(cfg)
+		subscription = &values
+	}
 	return writePanelJSON(filepath.Join(panelRuntimeDir(config.Dir()), kind+".json"), PanelProcessRuntime{
+		Version: config.Version, DatabaseRevision: upgradeDatabaseRevision(cfg),
 		PID: os.Getpid(), StartedAt: time.Now().UTC(), Settings: values, Overrides: overrides,
+		Subscription: subscription,
 	})
+}
+
+func startupProcessesAgree(directory string, panel PanelSettings, subscription SubscriptionSettings) bool {
+	if !panelProcessesAgree(directory, panel) {
+		return false
+	}
+	var process PanelProcessRuntime
+	return readPanelJSON(filepath.Join(panelRuntimeDir(directory), "api.json"), &process) == nil && process.Subscription != nil && reflect.DeepEqual(*process.Subscription, subscription)
 }
 
 func panelProcessSettingsAgree(kind string, a, b PanelSettings) bool {

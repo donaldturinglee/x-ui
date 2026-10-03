@@ -1,11 +1,17 @@
 import type { Page, Route } from "@playwright/test";
 
 import type { CoreRestartJob, CoreStatus } from "../../src/features/overview/api/core";
+import type { UpgradeJob, UpgradeStatus } from "../../src/features/overview/api/upgrade";
 import type {
     PanelSettings,
     PanelSettingsState,
     PanelRestartJob,
 } from "../../src/features/settings/api/panel";
+import type {
+    SubscriptionSettings,
+    SubscriptionSettingsState,
+} from "../../src/features/settings/api/subscription";
+import { subscriptionPublicBase } from "../../src/features/settings/subscriptionUri";
 
 // The suite answers every API call itself rather than bringing up a Go server
 // and a database, so a run needs nothing but a browser and says exactly what
@@ -32,6 +38,8 @@ export interface ApiState {
     // that a save landed rather than only that the form submitted.
     settings?: Record<string, string>;
     panelSettings?: PanelSettingsState;
+    subscriptionSettings?: SubscriptionSettingsState;
+    subscriptionSaves?: number;
     panelSaves?: number;
     panelRestarts?: number;
     panelRestartPolls?: number;
@@ -43,6 +51,15 @@ export interface ApiState {
     coreRestartHold?: boolean;
     coreRestartOutcome?: "succeeded" | "failed";
     coreRestartPhase?: "checking" | "restarting" | "verifying";
+    upgrade?: UpgradeStatus;
+    upgradeChecks?: number;
+    upgradeStarts?: number;
+    upgradePolls?: number;
+    upgradeHold?: boolean;
+    upgradeDisconnect?: boolean;
+    upgradeUnauthorized?: boolean;
+    upgradeCheckFailure?: boolean;
+    upgradeOutcome?: "succeeded" | "rolled_back" | "failed";
     // Written, amended and taken away by the listeners table, and read back the
     // same way. Held as state rather than answered from a constant so a test
     // checks what the panel actually sent.
@@ -264,11 +281,67 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         restartRequired: false,
         restartSupported: true,
     };
+    const defaultSubscription = {
+        ...startupSettings.subscription,
+        publicUrl: "https://sub.example.com",
+    };
+    state.subscriptionSettings ??= {
+        saved: structuredClone(defaultSubscription),
+        running: structuredClone(defaultSubscription),
+        savedPanel: state.panelSettings.saved,
+        runningPanel: state.panelSettings.running,
+        revision: state.panelSettings.revision,
+        overrides: {},
+        pendingScopes: [],
+        restartRequired: false,
+        restartSupported: true,
+        savedUri: "https://sub.example.com/sub/",
+        runningUri: "https://sub.example.com/sub/",
+    };
+    const syncStartupSettings = () => {
+        const panel = state.panelSettings!;
+        const sub = state.subscriptionSettings!;
+        const scopes: ("panel" | "subscription")[] = [];
+        if (JSON.stringify(panel.saved) !== JSON.stringify(panel.running)) scopes.push("panel");
+        if (JSON.stringify(sub.saved) !== JSON.stringify(sub.running)) scopes.push("subscription");
+        panel.pendingScopes = scopes;
+        panel.savedSubscription = sub.saved;
+        panel.runningSubscription = sub.running;
+        panel.restartRequired =
+            scopes.length > 0 ||
+            Boolean(
+                panel.restartJob &&
+                ["queued", "running", "rolling_back"].includes(panel.restartJob.state),
+            );
+        Object.assign(sub, {
+            savedPanel: panel.saved,
+            runningPanel: panel.running,
+            revision: panel.revision,
+            pendingScopes: scopes,
+            restartRequired: panel.restartRequired,
+            restartSupported: panel.restartSupported,
+            restartUnavailableReason: panel.restartUnavailableReason,
+            restartJob: panel.restartJob,
+            savedUri: subscriptionPublicBase(sub.saved, "localhost"),
+            runningUri: subscriptionPublicBase(sub.running, "localhost"),
+        });
+    };
+    syncStartupSettings();
     state.inbounds ??= defaultInbounds.map((inbound) => ({ ...inbound }));
     state.outbounds ??= defaultOutbounds.map((outbound) => ({ ...outbound }));
     state.clients ??= [{ ...client }];
     state.baseConfig ??= { ...defaultBaseConfig };
     state.coreStatus ??= { supported: true, state: "active", pid: 4242, uptimeSeconds: 3600 };
+    state.upgrade ??= {
+        supported: true,
+        currentVersion: "v0.0.1",
+        platform: "amd64",
+        checkState: "unchecked",
+        configRevision: "upgrade-revision",
+        canUpgrade: false,
+        blockedReason: "Check for updates before upgrading.",
+        components: ["API", "Worker", "CLI", "Web panel", "Database migrations"],
+    };
 
     const isApiRequest = ({ pathname }: URL) => pathname.startsWith(`${basePath}api/`);
 
@@ -859,6 +932,125 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
             return;
         }
 
+        if (path === "/upgrade" && method === "GET") {
+            await route.fulfill(envelope(state.upgrade));
+            return;
+        }
+        if (path === "/upgrade/check" && method === "POST") {
+            state.upgradeChecks = (state.upgradeChecks ?? 0) + 1;
+            const current = state.upgrade!;
+            current.checkedAt = new Date().toISOString();
+            current.checkId = "a".repeat(32);
+            if (state.upgradeCheckFailure) {
+                current.checkState = "failed";
+                current.checkError =
+                    "The release could not be checked. Check the host's GitHub connection and try again.";
+                current.canUpgrade = false;
+            } else {
+                current.checkState = "checked";
+                current.latest = {
+                    id: 1,
+                    version: "v0.0.2",
+                    url: "https://github.com/donaldturinglee/x-ui/releases/tag/v0.0.2",
+                    publishedAt: "2026-10-01T00:00:00Z",
+                    assetId: 2,
+                    assetName: "x-ui-linux-amd64.tar.gz",
+                    assetUrl:
+                        "https://github.com/donaldturinglee/x-ui/releases/download/v0.0.2/x-ui-linux-amd64.tar.gz",
+                    assetSize: 1000,
+                    assetUpdatedAt: "2026-10-01T00:00:00Z",
+                    sha256: "0".repeat(64),
+                };
+                current.canUpgrade =
+                    current.supported &&
+                    current.currentVersion !== current.latest.version &&
+                    !state.panelSettings?.restartRequired;
+                current.blockedReason = !current.supported
+                    ? current.reason
+                    : state.panelSettings?.restartRequired
+                      ? "Apply the saved Panel and Subscription settings before upgrading."
+                      : current.canUpgrade
+                        ? undefined
+                        : "This installation is up to date.";
+                current.checkError = undefined;
+            }
+            await route.fulfill(envelope(current));
+            return;
+        }
+        if (path === "/upgrade" && method === "POST") {
+            const current = state.upgrade!;
+            const body = request.postDataJSON() as {
+                checkId: string;
+                expectedCurrentVersion: string;
+                configRevision: string;
+            };
+            if (
+                body.checkId !== current.checkId ||
+                body.expectedCurrentVersion !== current.currentVersion ||
+                body.configRevision !== current.configRevision
+            ) {
+                await route.fulfill(
+                    refusal(409, "Version or configuration changed; check for updates again"),
+                );
+                return;
+            }
+            if (
+                !current.job ||
+                !["queued", "running", "rolling_back"].includes(current.job.state)
+            ) {
+                state.upgradeStarts = (state.upgradeStarts ?? 0) + 1;
+                state.upgradePolls = 0;
+                current.job = {
+                    id: "b".repeat(32),
+                    state: "queued",
+                    phase: "scheduled",
+                    actor: "operator",
+                    fromVersion: current.currentVersion,
+                    toVersion: current.latest!.version,
+                    components: current.components,
+                    requestedAt: new Date().toISOString(),
+                    needsRecovery: false,
+                } satisfies UpgradeJob;
+                current.canUpgrade = false;
+            }
+            await route.fulfill({ ...envelope(current.job), status: 202 });
+            return;
+        }
+        if (path.startsWith("/upgrade/jobs/") && method === "GET") {
+            if (state.upgradeDisconnect) {
+                await route.abort("connectionrefused");
+                return;
+            }
+            if (state.upgradeUnauthorized) {
+                await route.fulfill(refusal(401, "Session expired"));
+                return;
+            }
+            const current = state.upgrade!;
+            const job = current.job;
+            if (!job || !path.endsWith(`/${job.id}`)) {
+                await route.fulfill(refusal(404, "Upgrade task does not exist"));
+                return;
+            }
+            if (["queued", "running", "rolling_back"].includes(job.state)) {
+                state.upgradePolls = (state.upgradePolls ?? 0) + 1;
+                job.state = "running";
+                job.phase = state.upgradeHold ? "backing_up" : "verifying";
+                if (!state.upgradeHold && state.upgradePolls >= 3) {
+                    job.state = state.upgradeOutcome ?? "succeeded";
+                    job.finishedAt = new Date().toISOString();
+                    if (job.state === "succeeded") current.currentVersion = job.toVersion;
+                    else
+                        job.error =
+                            job.state === "rolled_back"
+                                ? "The upgrade failed. The previous version and database have been restored."
+                                : "Database recovery failed. Services remain stopped and the backup was retained.";
+                    job.needsRecovery = job.state === "failed";
+                }
+            }
+            await route.fulfill(envelope(job));
+            return;
+        }
+
         if (path === "/core" && method === "GET") {
             await route.fulfill(envelope(state.coreStatus));
             return;
@@ -929,6 +1121,7 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         }
 
         if (path === "/settings/panel" && method === "GET") {
+            syncStartupSettings();
             await route.fulfill(envelope(state.panelSettings));
             return;
         }
@@ -953,16 +1146,54 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                 revision: `panel-${state.panelSaves}`,
                 restartRequired: JSON.stringify(body.values) !== JSON.stringify(current.running),
             };
+            syncStartupSettings();
             await route.fulfill(envelope(state.panelSettings));
             return;
         }
 
-        if (path === "/settings/panel/restart" && method === "POST") {
+        if (path === "/settings/subscription" && method === "GET") {
+            syncStartupSettings();
+            await route.fulfill(envelope(state.subscriptionSettings));
+            return;
+        }
+        if (path === "/settings/subscription" && method === "POST") {
+            const body = request.postDataJSON() as {
+                revision: string;
+                values: SubscriptionSettings;
+            };
+            if (body.revision !== state.panelSettings!.revision) {
+                await route.fulfill(
+                    refusal(
+                        409,
+                        "Configuration changed since you started editing. Discard changes and try again",
+                    ),
+                );
+                return;
+            }
+            state.subscriptionSaves = (state.subscriptionSaves ?? 0) + 1;
+            state.subscriptionSettings!.saved = body.values;
+            state.panelSettings!.revision = `subscription-${state.subscriptionSaves}`;
+            syncStartupSettings();
+            await route.fulfill(envelope(state.subscriptionSettings));
+            return;
+        }
+
+        if (["/settings/panel/restart", "/settings/apply"].includes(path) && method === "POST") {
+            syncStartupSettings();
             const current = state.panelSettings!;
-            const body = request.postDataJSON() as { revision: string };
+            const body = request.postDataJSON() as { revision: string; scopes?: string[] };
             if (body.revision !== current.revision) {
                 await route.fulfill(
                     refusal(409, "Configuration changed; refresh before applying it"),
+                );
+                return;
+            }
+            if (
+                JSON.stringify((body.scopes ?? ["panel"]).toSorted()) !==
+                JSON.stringify(current.pendingScopes)
+            ) {
+                await route.fulfill(
+                    refusal(409, "Saved Panel and Subscription changes must be confirmed together"),
                 );
                 return;
             }
@@ -976,13 +1207,20 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                 requestedAt: new Date().toISOString(),
                 values: structuredClone(current.saved),
                 previous: structuredClone(current.running),
+                subscription: structuredClone(state.subscriptionSettings!.saved),
+                previousSubscription: structuredClone(state.subscriptionSettings!.running),
+                scopes: current.pendingScopes,
             };
             current.restartJob = job;
+            syncStartupSettings();
             await route.fulfill({ ...envelope(job), status: 202 });
             return;
         }
 
-        if (path.startsWith("/settings/panel/restart/") && method === "GET") {
+        if (
+            (path.startsWith("/settings/panel/restart/") || path.startsWith("/settings/apply/")) &&
+            method === "GET"
+        ) {
             const current = state.panelSettings!;
             const job = current.restartJob;
             if (!job || !path.endsWith(`/${job.id}`)) {
@@ -996,10 +1234,15 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                 job.finishedAt = new Date().toISOString();
                 if (job.state === "succeeded") {
                     current.running = structuredClone(job.values);
+                    state.subscriptionSettings!.running = structuredClone(job.subscription!);
                     current.restartRequired = false;
                 } else if (job.state === "rolled_back") {
                     current.saved = structuredClone(job.previous);
                     current.running = structuredClone(job.previous);
+                    state.subscriptionSettings!.saved = structuredClone(job.previousSubscription!);
+                    state.subscriptionSettings!.running = structuredClone(
+                        job.previousSubscription!,
+                    );
                     current.revision = `restored-${state.panelRestarts}`;
                     current.restartRequired = false;
                     job.error =
@@ -1007,6 +1250,7 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                 } else
                     job.error = "The services did not recover; check them from the command line.";
             }
+            syncStartupSettings();
             await route.fulfill(envelope(job));
             return;
         }

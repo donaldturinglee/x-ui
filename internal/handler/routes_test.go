@@ -40,6 +40,7 @@ func mountAPI() *gin.Engine {
 	settingHandler := NewSettingHandler(settings, telegram, config.Default())
 	systemHandler := NewSystemHandler(service.NewSystemService(store, settings))
 	statsHandler := NewStatsHandler(stats, settings, nil)
+	upgradeHandler := NewUpgradeHandler(service.NewUpgradeService(config.Default()))
 
 	engine := gin.New()
 	statsHandler.RegisterHealth(engine)
@@ -60,6 +61,7 @@ func mountAPI() *gin.Engine {
 		settingHandler.Register(group)
 		systemHandler.Register(group)
 		statsHandler.Register(group)
+		upgradeHandler.Register(group)
 	}
 
 	return engine
@@ -125,10 +127,18 @@ func TestRegisterMountsEveryRouteWithoutConflict(t *testing.T) {
 		"POST /api/settings/panel",
 		"POST /api/settings/panel/restart",
 		"GET /api/settings/panel/restart/:id",
+		"GET /api/settings/subscription",
+		"POST /api/settings/subscription",
+		"POST /api/settings/apply",
+		"GET /api/settings/apply/:id",
 		"POST /api/telegram/test",
 		"GET /api/maintenance",
 		"POST /api/maintenance",
 		"GET /api/system",
+		"GET /api/upgrade",
+		"POST /api/upgrade/check",
+		"POST /api/upgrade",
+		"GET /api/upgrade/jobs/:id",
 		"GET /api/core",
 		"POST /api/core/restart",
 		"GET /api/core/restart/:id",

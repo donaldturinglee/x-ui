@@ -2,6 +2,8 @@ import { Button, Dialog } from "@gamecrafters/base-ui/react";
 import type { RefObject } from "react";
 
 import { PLAIN_BUTTON, SAVE_BUTTON } from "./layout";
+import type { SettingsScope } from "../api/panel";
+import type { SettingsChange } from "./startupChanges";
 
 export const PanelRestartDialog = ({
     targetUrl,
@@ -9,15 +11,25 @@ export const PanelRestartDialog = ({
     onClose,
     onConfirm,
     returnFocusRef,
+    scopes = ["panel"],
+    changes = [],
+    subscriptionUri,
 }: {
     targetUrl: string;
     addressChanged: boolean;
     onClose: () => void;
     onConfirm: () => void;
     returnFocusRef: RefObject<HTMLButtonElement | null>;
+    scopes?: SettingsScope[];
+    changes?: SettingsChange[];
+    subscriptionUri?: string;
 }) => (
     <Dialog
-        title="Restart and apply Panel settings"
+        title={
+            scopes.includes("subscription")
+                ? "Restart and apply settings"
+                : "Restart and apply Panel settings"
+        }
         onClose={onClose}
         returnFocusRef={returnFocusRef}
         width={520}
@@ -37,6 +49,30 @@ export const PanelRestartDialog = ({
                 The saved settings will be applied. The panel will be briefly unavailable while it
                 restarts.
             </p>
+            <p>
+                Apply saved changes to:{" "}
+                {scopes
+                    .map((scope) => (scope === "panel" ? "Panel" : "Subscription"))
+                    .join(" and ")}
+                .
+            </p>
+            {changes.length > 0 && (
+                <dl className="max-h-64 space-y-2 overflow-y-auto">
+                    {changes.map((change) => (
+                        <div key={`${change.scope}-${change.label}`}>
+                            <dt className="font-medium">
+                                {change.scope}: {change.label}
+                            </dt>
+                            <dd className="break-all">
+                                {change.before} → {change.after}
+                            </dd>
+                        </div>
+                    ))}
+                </dl>
+            )}
+            {subscriptionUri && scopes.includes("subscription") && (
+                <p className="break-all">Saved subscription URI: {subscriptionUri}</p>
+            )}
             {addressChanged && (
                 <>
                     <p>The panel address will change. Open this address after the restart:</p>

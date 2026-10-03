@@ -65,14 +65,17 @@ func (p *PanelSettings) UnmarshalJSON(data []byte) error {
 }
 
 type PanelSettingsState struct {
-	Saved                    PanelSettings     `json:"saved"`
-	Running                  PanelSettings     `json:"running"`
-	Revision                 string            `json:"revision"`
-	Overrides                map[string]string `json:"overrides"`
-	RestartRequired          bool              `json:"restartRequired"`
-	RestartSupported         bool              `json:"restartSupported"`
-	RestartUnavailableReason string            `json:"restartUnavailableReason,omitempty"`
-	RestartJob               *PanelRestartJob  `json:"restartJob,omitempty"`
+	Saved                    PanelSettings        `json:"saved"`
+	Running                  PanelSettings        `json:"running"`
+	Revision                 string               `json:"revision"`
+	Overrides                map[string]string    `json:"overrides"`
+	RestartRequired          bool                 `json:"restartRequired"`
+	RestartSupported         bool                 `json:"restartSupported"`
+	RestartUnavailableReason string               `json:"restartUnavailableReason,omitempty"`
+	RestartJob               *PanelRestartJob     `json:"restartJob,omitempty"`
+	PendingScopes            []string             `json:"pendingScopes"`
+	SavedSubscription        SubscriptionSettings `json:"savedSubscription"`
+	RunningSubscription      SubscriptionSettings `json:"runningSubscription"`
 }
 
 type panelField struct {
@@ -198,16 +201,17 @@ func validatePanelSettings(p PanelSettings) error {
 // PanelSettingsService edits the startup file without changing a running
 // listener. A file revision prevents a stale browser from overwriting edits.
 type PanelSettingsService struct {
-	mu       sync.Mutex
-	path     string
-	running  PanelSettings
-	settings *SettingService
-	restart  *PanelRestartService
+	mu                  sync.Mutex
+	path                string
+	running             PanelSettings
+	runningSubscription SubscriptionSettings
+	settings            *SettingService
+	restart             *PanelRestartService
 }
 
 func NewPanelSettingsService(settings *SettingService, cfg *config.Config) *PanelSettingsService {
 	return &PanelSettingsService{
-		path: filepath.Join(config.Dir(), "config.yaml"), running: panelSettingsOf(cfg), settings: settings,
+		path: filepath.Join(config.Dir(), "config.yaml"), running: panelSettingsOf(cfg), runningSubscription: subscriptionSettingsOf(cfg), settings: settings,
 	}
 }
 
@@ -231,6 +235,15 @@ func (s *PanelSettingsService) state(data []byte, cfg *config.Config) PanelSetti
 		Saved: saved, Running: s.running, Revision: panelRevision(data),
 		Overrides: overrides, RestartRequired: !reflect.DeepEqual(saved, s.running),
 	}
+	state.SavedSubscription, state.RunningSubscription = subscriptionSettingsOf(cfg), s.runningSubscription
+	state.PendingScopes = []string{}
+	if !reflect.DeepEqual(saved, s.running) {
+		state.PendingScopes = append(state.PendingScopes, "panel")
+	}
+	if !reflect.DeepEqual(state.SavedSubscription, s.runningSubscription) {
+		state.PendingScopes = append(state.PendingScopes, "subscription")
+	}
+	state.RestartRequired = len(state.PendingScopes) > 0
 	if s.restart != nil {
 		s.restart.decorate(&state)
 	}
@@ -259,88 +272,115 @@ func (s *PanelSettingsService) Read() (PanelSettingsState, error) {
 func (s *PanelSettingsService) Save(ctx context.Context, actor, revision string, values PanelSettings) (PanelSettingsState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	unlock, err := acquirePanelLock(filepath.Dir(s.path))
-	if err != nil {
-		return PanelSettingsState{}, err
-	}
-	defer unlock()
-	if job, err := latestPanelRestart(filepath.Dir(s.path)); err != nil {
-		return PanelSettingsState{}, err
-	} else if job != nil && job.active() {
-		return PanelSettingsState{}, domain.Conflictf("Panel restart is in progress; wait before saving more changes")
-	}
-	state, data, err := s.read()
-	if err != nil {
-		return PanelSettingsState{}, err
-	}
-	if revision != state.Revision {
-		return PanelSettingsState{}, domain.Conflictf("Configuration changed since you started editing. Discard changes and try again")
-	}
 	values = normalisePanelSettings(values)
 	if err := validatePanelSettings(values); err != nil {
 		return PanelSettingsState{}, err
 	}
+	cfg, data, err := s.saveFields(ctx, actor, revision, values.fields(), func(cfg *config.Config) []panelField {
+		return panelSettingsOf(cfg).fields()
+	}, "panel-settings")
+	if err != nil {
+		return PanelSettingsState{}, err
+	}
+	return s.state(data, cfg), nil
+}
+
+func (s *PanelSettingsService) saveFields(ctx context.Context, actor, revision string, fields []panelField, currentFields func(*config.Config) []panelField, auditKind string) (*config.Config, []byte, error) {
+	gate, err := BeginHostWrite(filepath.Dir(s.path))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer gate()
+	unlock, err := acquirePanelLock(filepath.Dir(s.path))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer unlock()
+	if job, err := latestPanelRestart(filepath.Dir(s.path)); err != nil {
+		return nil, nil, err
+	} else if job != nil && job.active() {
+		return nil, nil, domain.Conflictf("Configuration application is in progress; wait before saving more changes")
+	}
+	state, data, err := s.read()
+	if err != nil {
+		return nil, nil, err
+	}
+	if revision != state.Revision {
+		return nil, nil, domain.Conflictf("Configuration changed since you started editing. Discard changes and try again")
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return nil, nil, err
+	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return PanelSettingsState{}, err
+		return nil, nil, err
 	}
 	if len(document.Content) == 0 {
 		document = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
 	}
 	changed := []string{}
-	previous := state.Saved.fields()
-	for i, field := range values.fields() {
+	previous := currentFields(cfg)
+	for i, field := range fields {
 		if reflect.DeepEqual(field.value, previous[i].value) {
 			continue
 		}
 		if env, overridden := state.Overrides[field.name]; overridden {
-			return PanelSettingsState{}, domain.Invalidf("%s is controlled by %s; change the environment variable instead", field.name, env)
+			if field.section != "subscription" {
+				return nil, nil, domain.Invalidf("%s is controlled by %s; change the environment variable instead", field.name, env)
+			}
+		}
+		if _, exists := os.LookupEnv(field.env); exists {
+			return nil, nil, domain.Invalidf("%s is controlled by %s; change the environment variable instead", field.name, field.env)
 		}
 		section := yamlMappingEntry(document.Content[0], field.section)
 		if section.Kind == 0 || section.Tag == "!!null" {
 			*section = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		}
 		if section.Kind != yaml.MappingNode {
-			return PanelSettingsState{}, domain.Invalidf("Configuration section %s must be a mapping", field.section)
+			return nil, nil, domain.Invalidf("Configuration section %s must be a mapping", field.section)
 		}
 		target := yamlMappingEntry(section, field.key)
 		head, line, foot := target.HeadComment, target.LineComment, target.FootComment
 		if err := target.Encode(field.value); err != nil {
-			return PanelSettingsState{}, err
+			return nil, nil, err
 		}
 		target.HeadComment, target.LineComment, target.FootComment = head, line, foot
 		changed = append(changed, field.section+"."+field.key)
 	}
 	if len(changed) == 0 {
-		return state, nil
+		return cfg, data, nil
 	}
 	// Preserve the last applied form across multiple saves. It must not be
 	// replaced by a new API starting halfway through a restart operation.
-	if !state.RestartRequired && panelProcessesAgree(filepath.Dir(s.path), s.running) {
+	if !state.RestartRequired && startupProcessesAgree(filepath.Dir(s.path), s.running, s.runningSubscription) {
 		if err := writePanelPrivate(filepath.Join(panelRuntimeDir(filepath.Dir(s.path)), "applied.yaml"), data); err != nil {
-			return PanelSettingsState{}, err
+			return nil, nil, err
 		}
 	}
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(&document); err != nil {
-		return PanelSettingsState{}, err
+		return nil, nil, err
 	}
 	if err := encoder.Close(); err != nil {
-		return PanelSettingsState{}, err
+		return nil, nil, err
 	}
-	cfg, err := config.Parse(output.Bytes())
+	cfg, err = config.Parse(output.Bytes())
 	if err != nil {
-		return PanelSettingsState{}, domain.Invalidf("Configuration cannot be applied: %v", err)
+		return nil, nil, domain.Invalidf("Configuration cannot be applied: %v", err)
+	}
+	if err := validateStartupListeners(cfg); err != nil {
+		return nil, nil, err
 	}
 	if err := s.write(output.Bytes(), data); err != nil {
-		return PanelSettingsState{}, err
+		return nil, nil, err
 	}
 	if s.settings != nil {
-		logChange(ctx, s.settings.store, actor, "panel-settings", "edit", changed)
+		logChange(ctx, s.settings.store, actor, auditKind, "edit", changed)
 	}
-	return s.state(output.Bytes(), cfg), nil
+	return cfg, output.Bytes(), nil
 }
 
 func yamlMappingEntry(mapping *yaml.Node, key string) *yaml.Node {

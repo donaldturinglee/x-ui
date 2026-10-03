@@ -184,6 +184,12 @@ func schedule(scheduler *cron.Cron, spec string, name string, job func(context.C
 		return
 	}
 	_, err := scheduler.AddFunc(spec, func() {
+		unlock, err := service.BeginHostWrite(config.Dir())
+		if err != nil {
+			logger.Debug("job ", name, " deferred during host maintenance")
+			return
+		}
+		defer unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
 		defer cancel()
 

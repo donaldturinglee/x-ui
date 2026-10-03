@@ -647,7 +647,7 @@ test.describe("the panel", () => {
         await page.goto("/general/settings?tab=subscription");
 
         const save = page
-            .getByRole("form", { name: "Subscription" })
+            .getByRole("form", { name: "Subscription", exact: true })
             .getByRole("button", { name: "Save", exact: true });
 
         // Nothing to save until something has changed.
@@ -669,7 +669,7 @@ test.describe("the panel", () => {
 
         await page.goto("/general/settings?tab=subscription");
 
-        const form = page.getByRole("form", { name: "Subscription" });
+        const form = page.getByRole("form", { name: "Subscription", exact: true });
         const info = form.getByRole("switch", { name: "Show the remaining quota and expiry" });
 
         await expect(info).not.toBeChecked();
@@ -677,32 +677,27 @@ test.describe("the panel", () => {
         await form.getByRole("button", { name: "Save", exact: true }).click();
 
         await expect.poll(() => state.settings?.subShowInfo).toBe("true");
-        // Where subscribers fetch from is shown with them, and set elsewhere.
-        await expect(page.getByLabel("Subscription URI")).toHaveValue(
+        await expect(page.getByLabel("Current subscription URI")).toHaveValue(
             "https://sub.example.com/sub/",
         );
     });
 
-    test("lays the subscription's options out in one card, its buttons at the foot", async ({
-        page,
-    }) => {
+    test("separates subscription content from editable service settings", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
         await page.goto("/general/settings?tab=subscription");
 
-        const form = page.getByRole("form", { name: "Subscription" });
+        const form = page.getByRole("form", { name: "Subscription", exact: true });
+        const service = page.getByRole("form", { name: "Subscription service", exact: true });
         const boxOf = async (control: Locator) => (await control.boundingBox())!;
 
-        await expect(form.getByLabel("Subscription URI")).toHaveValue(
+        await expect(service.getByLabel("Current subscription URI")).toHaveValue(
             "https://sub.example.com/sub/",
         );
 
-        // Where it is fetched from and how often, side by side, the address given
-        // the room it needs...
-        const uri = await boxOf(form.getByLabel("Subscription URI"));
+        const uri = await boxOf(service.getByLabel("Current subscription URI"));
         const refresh = await boxOf(form.getByLabel("Refresh interval (hours)"));
 
-        expect(refresh.y).toBe(uri.y);
         expect(uri.width).toBeGreaterThan(refresh.width);
 
         // ...how it is written for subscribers under them, a switch to a row...
@@ -713,15 +708,13 @@ test.describe("the panel", () => {
             form.getByRole("switch", { name: "Show the remaining quota and expiry" }),
         );
 
-        expect(encode.y).toBeGreaterThan(uri.y + uri.height);
+        expect(encode.y).toBeGreaterThan(refresh.y + refresh.height);
         expect(info.y).toBeGreaterThan(encode.y + encode.height);
 
-        // ...the listener that serves it under a line of its own, shown as
-        // configs/ sets it rather than changed...
-        const port = form.getByLabel("Port", { exact: true });
+        const port = service.getByLabel("Port", { exact: true });
 
         await expect(port).toHaveValue("8443");
-        await expect(port).toHaveAttribute("readonly", "");
+        await expect(port).toBeEditable();
         expect((await boxOf(port)).y).toBeGreaterThan(info.y + info.height);
 
         // ...and the buttons along the foot, Save last. Maintenance is the
@@ -729,8 +722,11 @@ test.describe("the panel", () => {
         const restore = await boxOf(form.getByRole("button", { name: "Restore defaults" }));
         const save = await boxOf(form.getByRole("button", { name: "Save", exact: true }));
 
-        expect(restore.y).toBeGreaterThan((await boxOf(port)).y);
+        expect(restore.y).toBeGreaterThan(info.y + info.height);
         expect(save.x).toBeGreaterThan(restore.x);
+        expect(
+            (await boxOf(service.getByRole("button", { name: "Save", exact: true }))).y,
+        ).toBeGreaterThan((await boxOf(port)).y);
         await expect(page.getByRole("button", { name: /maintenance/i })).toHaveCount(0);
     });
 

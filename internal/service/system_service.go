@@ -192,6 +192,11 @@ func rootPath() string {
 
 // Backup exports the panel's data, optionally leaving tables out.
 func (s *SystemService) Backup(ctx context.Context, actor string, exclude []string) ([]byte, error) {
+	gate, err := BeginHostWrite(config.Dir())
+	if err != nil {
+		return nil, err
+	}
+	defer gate()
 	backup, err := database.Export(ctx, s.store.DB(), exclude)
 	if err != nil {
 		return nil, err
@@ -216,6 +221,11 @@ func (s *SystemService) Backup(ctx context.Context, actor string, exclude []stri
 // audit log along with everything else -- an entry written first would be
 // erased by the thing it describes.
 func (s *SystemService) Restore(ctx context.Context, actor string, reader io.Reader) error {
+	gate, err := BeginHostWrite(config.Dir())
+	if err != nil {
+		return err
+	}
+	defer gate()
 	backup, err := database.Import(ctx, s.store.DB(), reader)
 	if err != nil {
 		return err

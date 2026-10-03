@@ -251,6 +251,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 	settingHandler := handler.NewSettingHandler(deps.settings, deps.telegram, cfg)
 	systemHandler := handler.NewSystemHandler(deps.system)
 	statsHandler := handler.NewStatsHandler(deps.stats, deps.settings, deps.health)
+	upgradeHandler := handler.NewUpgradeHandler(service.NewUpgradeService(cfg))
 
 	// Liveness sits at the root whatever the base path, and behind no
 	// authentication, because a load balancer and the CLI's healthcheck have no
@@ -264,11 +265,11 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 	// automatically, so without it any page an operator visits can act in their
 	// name. The token API does not, because a cross-site page cannot set a
 	// Token header without a CORS preflight the panel never answers.
-	public := engine.Group(base+"api", middleware.SameOrigin())
+	public := engine.Group(base+"api", middleware.SameOrigin(), handler.HostMaintenance(config.Dir()))
 	userHandler.RegisterPublic(public)
 
-	session := engine.Group(base+"api", middleware.SameOrigin(), middleware.RequireSession())
-	token := engine.Group(base+"apiv2", deps.tokens.RequireToken())
+	session := engine.Group(base+"api", middleware.SameOrigin(), middleware.RequireSession(), handler.HostMaintenance(config.Dir()))
+	token := engine.Group(base+"apiv2", deps.tokens.RequireToken(), handler.HostMaintenance(config.Dir()))
 
 	for _, group := range []*gin.RouterGroup{session, token} {
 		userHandler.Register(group)
@@ -280,6 +281,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 		settingHandler.Register(group)
 		systemHandler.Register(group)
 		statsHandler.Register(group)
+		upgradeHandler.Register(group)
 	}
 
 	mountWebUI(engine, cfg, base)

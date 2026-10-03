@@ -138,6 +138,34 @@ detect_package_manager() {
   return 1
 }
 
+# Serialize manual installation with tasks admitted by the running API. Hold
+# the gate before modifying packages on an existing installation, and pass the
+# descriptor to the CLI children that perform its database backup and checks.
+acquire_install_maintenance() {
+  local installation="${INSTALL_DIR:-/usr/local/x-ui}" maintenance_dir
+  if [[ -n "${X_UI_INSTALLER_LOCK_FD:-}" ]]; then return; fi
+  if ! command -v flock >/dev/null 2>&1; then
+    echo 'Install util-linux (flock) before updating an existing installation.' >&2
+    return 1
+  fi
+  if [[ "${installation}" == /usr/local/x-ui ]]; then
+    maintenance_dir=/var/lib/x-ui/maintenance
+  else
+    maintenance_dir="${CONFIG_DIR:-${installation}/configs}/.host-maintenance"
+  fi
+  if [[ -L "${maintenance_dir}" ]]; then echo 'Invalid maintenance directory.' >&2; return 1; fi
+  mkdir -p "${maintenance_dir}"
+  chmod 700 "${maintenance_dir}"
+  if [[ -L "${maintenance_dir}/gate.lock" ]]; then echo 'Invalid maintenance lock.' >&2; return 1; fi
+  exec {X_UI_INSTALLER_LOCK_FD}>"${maintenance_dir}/gate.lock"
+  chmod 600 "${maintenance_dir}/gate.lock"
+  if ! flock -n "${X_UI_INSTALLER_LOCK_FD}" || [[ -e "${maintenance_dir}/active.json" ]]; then
+    echo 'A host maintenance task is active. Wait for it to finish before installing.' >&2
+    return 1
+  fi
+  export X_UI_INSTALLER_LOCK_FD
+}
+
 detect_architecture() {
   # Run after dependency preparation, so uname is available on minimal hosts.
   case "$(uname -m)" in
@@ -1315,7 +1343,9 @@ install_x_ui() {
 
 echo -e "${green}Executing...${plain}"
 check_install_host
+if [[ -d "${INSTALL_DIR:-/usr/local/x-ui}" ]]; then acquire_install_maintenance; fi
 install_base
+acquire_install_maintenance
 detect_architecture
 if [[ -n "${release_tag}" ]]; then
   install_x_ui "${release_tag}"

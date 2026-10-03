@@ -52,6 +52,14 @@ func run(args []string) error {
 
 	command, rest := args[0], args[1:]
 	switch command {
+	case "admin", "seed", "token", "node", "database", "migrate", "setting", "backup":
+		unlock, err := service.BeginHostCLIWrite(config.Dir())
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	switch command {
 	case "version", "-v", "--version":
 		fmt.Println(config.Name, config.Version)
 		return nil
@@ -70,6 +78,15 @@ func run(args []string) error {
 		return panelRestartCommand(rest)
 	case "core-restart":
 		return coreRestartCommand(rest)
+	case "upgrade-run":
+		return upgradeCommand(rest)
+	case "upgrade-resume":
+		if len(rest) != 0 {
+			return errors.New("usage: x-ui-cli upgrade-resume")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		return service.ResumeUpgrade(ctx)
 	case "database":
 		return databaseCommand(rest)
 	case "migrate":
@@ -96,6 +113,8 @@ func usage() {
 	fmt.Println("    node           configure or check the local node and native statistics")
 	fmt.Println("    panel-restart  execute a queued Panel restart task (service manager only)")
 	fmt.Println("    core-restart   execute a queued local sing-box restart task (service manager only)")
+	fmt.Println("    upgrade-run    execute a queued upgrade task (service manager only)")
+	fmt.Println("    upgrade-resume recover an interrupted upgrade from its retained checkpoint")
 	fmt.Println("    database       check backup tools, back up or restore the complete database")
 	fmt.Println("    migrate        apply, roll back or inspect database migrations")
 	fmt.Println("    setting        show or reset runtime settings")

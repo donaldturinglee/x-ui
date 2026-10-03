@@ -67,6 +67,7 @@ Key features:
 - sing-box node configuration, synchronization and authenticated native statistics.
 - Administration, database migrations, backup and recovery through the CLI.
 - Linux release archives and an installer that sets up the panel and a local node.
+- Overview upgrades with release verification, complete database backup and rollback.
 
 The project ships four binaries: `x-ui-api`, `x-ui-worker`, `x-ui-cli` and
 `x-ui-agent`. See [the architecture notes](docs/architecture.md) for their roles.
@@ -140,6 +141,13 @@ X_UI_DATABASE_URL='postgres://x_ui:password@db.example.com/x_ui?sslmode=require'
 The installer still prepares client tools for backup and restore. It does not
 initialize or start a local PostgreSQL server when an external URL is supplied.
 Use a dedicated database whose role can restore its schemas.
+
+Standard root-managed Linux/systemd installations can upgrade through
+**Overview → Upgrade**. Check for a newer stable release, review its components
+and confirm. The panel backs up its installation and complete PostgreSQL database,
+then attempts rollback if migration or readiness checks fail. Apply pending
+Panel/Subscription settings first. Task records and backups are retained under
+`/var/lib/x-ui/upgrade/jobs/`; `x-ui-cli upgrade-resume` retries interrupted recovery.
 
 Run the installer again to upgrade. Existing configuration and valid node secrets
 are preserved. Before replacing an existing installation, it saves files and a

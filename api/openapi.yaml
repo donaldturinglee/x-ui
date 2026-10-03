@@ -1204,8 +1204,8 @@ paths:
       summary: The configuration the process started with
       description: |
         What was read from `configs/config.yaml` and the `X_UI_*`
-        environment at startup. Pending Panel changes are read and saved
-        separately through `/settings/panel`; this running snapshot is not
+        environment at startup. Pending Panel and Subscription changes are read
+        and saved separately through their settings endpoints; this running snapshot is not
         changed by a save. Nothing secret is in it.
       responses:
         "200":
@@ -1281,6 +1281,9 @@ paths:
         is kept running. Failed changes recover the previous Panel settings.
         Repeating a request for the same in-progress revision returns its task.
         Configuration saves are rejected while a task is in progress.
+        This compatibility endpoint confirms Panel changes only. If Subscription
+        changes are also pending it returns 409; use `/settings/apply` to confirm
+        every pending scope together.
       requestBody:
         required: true
         content:
@@ -1329,6 +1332,130 @@ paths:
                       obj: { $ref: "#/components/schemas/PanelRestartJob" }
         "400":
           $ref: "#/components/responses/Invalid"
+
+  /api/settings/subscription:
+    get:
+      tags: [settings]
+      summary: Read saved and running Subscription service configuration
+      responses:
+        "200":
+          description: Full service form, shared revision, environment locks, derived URIs and application status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/SubscriptionSettingsState" }
+    post:
+      tags: [settings]
+      summary: Save Subscription service configuration for the next restart
+      description: |
+        Send all nine fields and the current shared config.yaml revision. Unknown,
+        missing and null fields are refused, as are edits to environment-controlled
+        fields. Ports, listener collisions, paths, public URLs, IP/CIDR proxies
+        and readable matching certificate/key files are validated before atomic
+        replacement. Unrelated values and YAML comments are preserved. This does
+        not restart services. Runtime content options remain in `/settings` and
+        continue to take effect immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, values]
+              properties:
+                revision: { type: string, minLength: 64, maxLength: 64 }
+                values: { $ref: "#/components/schemas/SubscriptionSettings" }
+      responses:
+        "200":
+          description: Saved configuration and unchanged running snapshot
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/SubscriptionSettingsState" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/settings/apply:
+    post:
+      tags: [settings]
+      summary: Apply all confirmed pending Panel and Subscription settings
+      description: |
+        Available for the systemd installation. Send the shared saved revision and
+        exactly the pendingScopes displayed by either settings form. Partial or
+        stale confirmations return 409. API and worker restart together; the proxy
+        core keeps running. A local agent is updated only when its Panel connection
+        changes. Both forms are locked during the persisted task. Readiness checks
+        include new process IDs, startup snapshots, Panel health and the enabled
+        Subscription listener. Failure restores only editable fields in the confirmed
+        scopes, keeping secrets and unrelated options. Repeating the same active
+        revision and scopes returns the existing task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, scopes]
+              properties:
+                revision: { type: string, minLength: 64, maxLength: 64 }
+                scopes:
+                  type: array
+                  minItems: 1
+                  maxItems: 2
+                  uniqueItems: true
+                  items: { type: string, enum: [panel, subscription] }
+      responses:
+        "202":
+          description: Application task accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/settings/apply/{id}:
+    get:
+      tags: [settings]
+      summary: Read a persisted startup configuration application task
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}$" }
+      responses:
+        "200":
+          description: Application progress or terminal result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/PanelRestartJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/telegram/test:
     post:
@@ -1382,6 +1509,115 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Envelope"
+
+  /api/upgrade:
+    get:
+      tags: [system]
+      summary: Read upgrade capability, cached release check and persisted task
+      description: Cached checks expire after ten minutes. Does not contact GitHub while polling.
+      responses:
+        "200":
+          description: Upgrade state
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/UpgradeStatus" }
+    post:
+      tags: [system]
+      summary: Confirm and queue a release upgrade
+      description: |
+        Supports the standard root-managed single-host Linux/systemd installation.
+        Requires a newer stable release, an unexpired check and the current config
+        revision, with no pending Panel or Subscription changes. Revalidates the
+        release ID, asset ID and checksum before scheduling. Duplicate confirmations
+        return the active task. No commands, paths or arbitrary URLs are accepted.
+        The independent runner backs up the installation and complete PostgreSQL
+        database, migrates, replaces the managed components and verifies readiness.
+        Host writes are blocked until success or verified rollback. Recovery failure
+        retains the backup and write guard for command-line recovery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkId, expectedCurrentVersion, configRevision]
+              properties:
+                checkId: { type: string, pattern: "^[a-f0-9]{32}$" }
+                expectedCurrentVersion: { type: string }
+                configRevision: { type: string }
+      responses:
+        "202":
+          description: Upgrade queued or matching active task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/UpgradeJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/upgrade/check:
+    post:
+      tags: [system]
+      summary: Refresh the fixed repository's stable release check
+      description: |
+        Requires an empty JSON object. Checks the host architecture's archive and
+        SHA256SUMS. A GitHub connection or release validation failure is returned
+        as checkState=failed, never as an up-to-date result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200":
+          description: Refreshed check and upgrade capability
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/UpgradeStatus" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+
+  /api/upgrade/jobs/{id}:
+    get:
+      tags: [system]
+      summary: Follow a persistent upgrade task across API restarts
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}$" }
+      responses:
+        "200":
+          description: Progress or confirmed result, without private config or environment
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/UpgradeJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "404":
+          description: Upgrade task does not exist
 
   /api/core:
     get:
@@ -1810,6 +2046,56 @@ components:
         lastSignIn: { type: string, description: "\"2006-01-02 15:04:05 <ip>\", or empty." }
         createdAt: { type: integer, format: int64, description: Unix seconds. }
 
+    UpgradeStatus:
+      type: object
+      required: [supported, currentVersion, platform, checkState, configRevision, canUpgrade, components]
+      properties:
+        supported: { type: boolean }
+        reason: { type: string }
+        currentVersion: { type: string }
+        platform: { type: string }
+        checkState: { type: string, enum: [unchecked, checked, failed, expired] }
+        checkedAt: { type: string, format: date-time }
+        checkError: { type: string }
+        checkId: { type: string }
+        configRevision: { type: string }
+        latest: { $ref: "#/components/schemas/UpgradeRelease" }
+        canUpgrade: { type: boolean }
+        blockedReason: { type: string }
+        components: { type: array, items: { type: string } }
+        job: { $ref: "#/components/schemas/UpgradeJob" }
+
+    UpgradeRelease:
+      type: object
+      required: [id, version, url, publishedAt, assetId, assetName, assetUrl, assetSize, assetUpdatedAt, sha256]
+      properties:
+        id: { type: integer, format: int64 }
+        version: { type: string }
+        url: { type: string, format: uri }
+        publishedAt: { type: string, format: date-time }
+        assetId: { type: integer, format: int64 }
+        assetName: { type: string }
+        assetUrl: { type: string, format: uri }
+        assetSize: { type: integer, format: int64 }
+        assetUpdatedAt: { type: string, format: date-time }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+
+    UpgradeJob:
+      type: object
+      required: [id, state, phase, actor, fromVersion, toVersion, components, requestedAt, needsRecovery]
+      properties:
+        id: { type: string, pattern: "^[a-f0-9]{32}$" }
+        state: { type: string, enum: [queued, running, rolling_back, succeeded, rolled_back, failed] }
+        phase: { type: string }
+        actor: { type: string }
+        fromVersion: { type: string }
+        toVersion: { type: string }
+        components: { type: array, items: { type: string } }
+        requestedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        error: { type: string }
+        needsRecovery: { type: boolean }
+
     CoreStatus:
       type: object
       required: [supported, state, pid, uptimeSeconds]
@@ -1872,6 +2158,49 @@ components:
         restartSupported: { type: boolean }
         restartUnavailableReason: { type: string }
         restartJob: { $ref: "#/components/schemas/PanelRestartJob" }
+        savedSubscription: { $ref: "#/components/schemas/SubscriptionSettings" }
+        runningSubscription: { $ref: "#/components/schemas/SubscriptionSettings" }
+        pendingScopes:
+          type: array
+          items: { type: string, enum: [panel, subscription] }
+
+    SubscriptionSettings:
+      type: object
+      additionalProperties: false
+      required: [enabled, listen, port, basePath, domain, certFile, keyFile, publicUrl, trustedProxies]
+      properties:
+        enabled: { type: boolean }
+        listen: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        basePath: { type: string, description: "Leading/trailing slashes; no . or .. segments." }
+        domain: { type: string, description: Host name without scheme, port or path. }
+        certFile: { type: string }
+        keyFile: { type: string }
+        publicUrl: { type: string, description: "External HTTP/HTTPS base address with optional proxy prefix. basePath is appended. Empty derives it from local TLS, domain/request host and port." }
+        trustedProxies:
+          type: array
+          items: { type: string, description: IP address or CIDR range. }
+
+    SubscriptionSettingsState:
+      type: object
+      properties:
+        saved: { $ref: "#/components/schemas/SubscriptionSettings" }
+        running: { $ref: "#/components/schemas/SubscriptionSettings" }
+        savedPanel: { $ref: "#/components/schemas/PanelSettings" }
+        runningPanel: { $ref: "#/components/schemas/PanelSettings" }
+        revision: { type: string, description: Shared config.yaml file revision. }
+        overrides:
+          type: object
+          additionalProperties: { type: string }
+        pendingScopes:
+          type: array
+          items: { type: string, enum: [panel, subscription] }
+        restartRequired: { type: boolean }
+        restartSupported: { type: boolean }
+        restartUnavailableReason: { type: string }
+        restartJob: { $ref: "#/components/schemas/PanelRestartJob" }
+        savedUri: { type: string }
+        runningUri: { type: string }
 
     PanelRestartJob:
       type: object
@@ -1884,6 +2213,11 @@ components:
         finishedAt: { type: string, format: date-time }
         values: { $ref: "#/components/schemas/PanelSettings" }
         previous: { $ref: "#/components/schemas/PanelSettings" }
+        subscription: { $ref: "#/components/schemas/SubscriptionSettings" }
+        previousSubscription: { $ref: "#/components/schemas/SubscriptionSettings" }
+        scopes:
+          type: array
+          items: { type: string, enum: [panel, subscription] }
         error: { type: string, description: Public application or recovery failure message. }
 
     StartupSettings:

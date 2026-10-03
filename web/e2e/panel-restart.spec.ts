@@ -25,7 +25,7 @@ test("Save leaves the configuration pending and restart applies it after confirm
     expect(state.panelRestarts).toBeUndefined();
     await restart.click();
     await dialog.getByRole("button", { name: "Restart now", exact: true }).click();
-    await expect(panel).toContainText("Restarting the panel");
+    await expect(panel).toContainText("Restarting services");
     await expect(panel.getByLabel("Session length (minutes)")).toBeDisabled();
     await expect(panel.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
     expect(state.panelRestarts).toBe(1);
@@ -75,10 +75,10 @@ test("shows the updated address without treating a disconnect as a failed restar
         "href",
         updatedAddress.href,
     );
-    await page.route("**/api/settings/panel/restart/restart-1", (route) =>
+    await page.route("**/api/settings/apply/restart-1", (route) =>
         route.abort("connectionrefused"),
     );
-    await expect(panel).toContainText("Restarting the panel");
+    await expect(panel).toContainText("Restarting services");
     await expect(page).toHaveURL(/\/general\/settings\?tab=panel$/);
     await expect(panel).not.toContainText("The services did not recover");
 });
@@ -92,7 +92,7 @@ test("reload follows an existing restart task", async ({ page }) => {
     await panel.getByRole("button", { name: "Save", exact: true }).click();
     await panel.getByRole("button", { name: "Restart & Apply", exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Restart now" }).click();
-    await expect(panel).toContainText("Restarting the panel");
+    await expect(panel).toContainText("Restarting services");
     await page.reload();
     await expect(
         panel.getByRole("button", { name: "Restart & Apply", exact: true }),

@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,19 +32,43 @@ const panelCLI = "/usr/local/x-ui/bin/x-ui-cli"
 var panelJobID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type PanelRestartJob struct {
-	ID          string        `json:"id"`
-	State       string        `json:"state"`
-	Revision    string        `json:"revision"`
-	Actor       string        `json:"actor"`
-	RequestedAt time.Time     `json:"requestedAt"`
-	FinishedAt  *time.Time    `json:"finishedAt,omitempty"`
-	Values      PanelSettings `json:"values"`
-	Previous    PanelSettings `json:"previous"`
-	Error       string        `json:"error,omitempty"`
+	ID                   string                `json:"id"`
+	State                string                `json:"state"`
+	Revision             string                `json:"revision"`
+	Actor                string                `json:"actor"`
+	RequestedAt          time.Time             `json:"requestedAt"`
+	FinishedAt           *time.Time            `json:"finishedAt,omitempty"`
+	Values               PanelSettings         `json:"values"`
+	Previous             PanelSettings         `json:"previous"`
+	Subscription         *SubscriptionSettings `json:"subscription,omitempty"`
+	PreviousSubscription *SubscriptionSettings `json:"previousSubscription,omitempty"`
+	Scopes               []string              `json:"scopes,omitempty"`
+	Error                string                `json:"error,omitempty"`
 }
 
 func (job *PanelRestartJob) active() bool {
 	return job.State == "queued" || job.State == "running" || job.State == "rolling_back"
+}
+
+func (job *PanelRestartJob) scopes() []string {
+	if len(job.Scopes) == 0 {
+		return []string{"panel"}
+	} // Tasks created by older versions.
+	return job.Scopes
+}
+
+func confirmedStartupScopes(scopes []string) ([]string, error) {
+	result := append([]string(nil), scopes...)
+	sort.Strings(result)
+	if len(result) == 0 {
+		return nil, domain.Invalidf("Confirm the saved settings to apply")
+	}
+	for i, scope := range result {
+		if scope != "panel" && scope != "subscription" || i > 0 && result[i-1] == scope {
+			return nil, domain.Invalidf("Confirm Panel and/or Subscription settings once each")
+		}
+	}
+	return result, nil
 }
 
 // Configuration bytes and environment values never belong in the API result.
@@ -130,6 +155,9 @@ func (s *PanelRestartService) decorate(state *PanelSettingsState) {
 	state.RestartJob = job
 	if job != nil && (job.active() || job.State == "failed" && job.Revision == state.Revision) {
 		state.RestartRequired = true
+		if len(state.PendingScopes) == 0 {
+			state.PendingScopes = append([]string(nil), job.scopes()...)
+		}
 	}
 }
 
@@ -160,9 +188,22 @@ func AuditPanelRestart(ctx context.Context, settings *SettingService, job *Panel
 }
 
 func (s *PanelRestartService) Queue(ctx context.Context, actor, revision string) (*PanelRestartJob, error) {
+	return s.QueueScopes(ctx, actor, revision, []string{"panel"})
+}
+
+func (s *PanelRestartService) QueueScopes(ctx context.Context, actor, revision string, scopes []string) (*PanelRestartJob, error) {
+	scopes, err := confirmedStartupScopes(scopes)
+	if err != nil {
+		return nil, err
+	}
 	if !s.supported {
 		return nil, domain.Invalidf("%s", s.reason)
 	}
+	gate, err := maintenanceGate(filepath.Dir(s.panel.path), "panel", "")
+	if err != nil {
+		return nil, err
+	}
+	defer gate()
 	s.panel.mu.Lock()
 	defer s.panel.mu.Unlock()
 	directory := filepath.Dir(s.panel.path)
@@ -174,12 +215,12 @@ func (s *PanelRestartService) Queue(ctx context.Context, actor, revision string)
 	if job, err := latestPanelRestart(directory); err != nil {
 		return nil, err
 	} else if job != nil && job.active() {
-		if job.Revision == revision {
+		if job.Revision == revision && reflect.DeepEqual(job.scopes(), scopes) {
 			return job, nil
 		}
-		return nil, domain.Conflictf("Another Panel restart is already in progress")
+		return nil, domain.Conflictf("Another configuration application is already in progress")
 	}
-	state, _, err := s.panel.read()
+	state, data, err := s.panel.read()
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +230,20 @@ func (s *PanelRestartService) Queue(ctx context.Context, actor, revision string)
 	if !state.RestartRequired {
 		return nil, domain.Invalidf("There are no saved changes to apply")
 	}
+	if !reflect.DeepEqual(scopes, state.PendingScopes) {
+		return nil, domain.Conflictf("Saved Panel and Subscription changes must be confirmed together; refresh the settings before applying")
+	}
 	if err := validatePanelSettings(state.Saved); err != nil {
+		return nil, err
+	}
+	if err := validateSubscriptionSettings(state.SavedSubscription); err != nil {
+		return nil, err
+	}
+	target, err := config.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStartupListeners(target); err != nil {
 		return nil, err
 	}
 	before, err := os.ReadFile(filepath.Join(panelRuntimeDir(directory), "applied.yaml"))
@@ -200,15 +254,17 @@ func (s *PanelRestartService) Queue(ctx context.Context, actor, revision string)
 	if err != nil {
 		return nil, err
 	}
-	if !reflect.DeepEqual(panelSettingsOf(previous), s.panel.running) || !panelProcessesAgree(directory, s.panel.running) {
+	if !reflect.DeepEqual(panelSettingsOf(previous), s.panel.running) || !reflect.DeepEqual(subscriptionSettingsOf(previous), s.panel.runningSubscription) || !startupProcessesAgree(directory, s.panel.running, s.panel.runningSubscription) {
 		return nil, domain.Conflictf("API and worker are not running the last applied configuration; check their services first")
 	}
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
 		return nil, err
 	}
+	previousSubscription := subscriptionSettingsOf(previous)
 	job := PanelRestartJob{ID: hex.EncodeToString(idBytes), State: "queued", Revision: revision, Actor: actor,
-		RequestedAt: time.Now().UTC(), Values: state.Saved, Previous: panelSettingsOf(previous)}
+		RequestedAt: time.Now().UTC(), Values: state.Saved, Previous: panelSettingsOf(previous),
+		Subscription: &state.SavedSubscription, PreviousSubscription: &previousSubscription, Scopes: scopes}
 	environment := make(map[string]string)
 	for _, entry := range os.Environ() {
 		key, value, _ := strings.Cut(entry, "=")
@@ -223,9 +279,13 @@ func (s *PanelRestartService) Queue(ctx context.Context, actor, revision string)
 	if err := writePanelPrivate(filepath.Join(panelRuntimeDir(directory), "latest"), []byte(job.ID)); err != nil {
 		return nil, err
 	}
+	if err := maintenanceReserve(directory, "panel", job.ID); err != nil {
+		return nil, err
+	}
 	if err := s.host.Schedule(ctx, directory, job.ID); err != nil {
 		record.Job.State, record.Job.Error = "failed", "The restart task could not be scheduled; no services were restarted."
 		_ = writePanelJSON(panelJobPath(directory, job.ID), record)
+		_ = os.Remove(filepath.Join(maintenanceDir(directory), "active.json"))
 		return nil, domain.Invalidf("%s", record.Job.Error)
 	}
 	if s.panel.settings != nil {
@@ -260,7 +320,8 @@ func CheckpointPanelConfiguration(cfg *config.Config) error {
 		return err
 	}
 	values := panelSettingsOf(cfg)
-	if reflect.DeepEqual(values, panelSettingsOf(saved)) && panelProcessesAgree(directory, values) {
+	subscription := subscriptionSettingsOf(cfg)
+	if reflect.DeepEqual(values, panelSettingsOf(saved)) && reflect.DeepEqual(subscription, subscriptionSettingsOf(saved)) && startupProcessesAgree(directory, values, subscription) {
 		return writePanelPrivate(filepath.Join(panelRuntimeDir(directory), "applied.yaml"), data)
 	}
 	return nil
@@ -334,30 +395,48 @@ func (systemdPanelHost) PID(ctx context.Context, unit string) (int, error) {
 }
 
 func (systemdPanelHost) Healthy(ctx context.Context, cfg *config.Config) error {
-	host := strings.Trim(cfg.Server.Listen, "[]")
+	if err := probeStartupListener(ctx, cfg.Server.Listen, cfg.Server.Port, cfg.Server.Domain, cfg.Server.TLSEnabled(), http.MethodGet, "/healthz", http.StatusOK); err != nil {
+		return fmt.Errorf("Panel health check failed: %w", err)
+	}
+	if !cfg.Subscription.Enabled {
+		return nil
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	if err := probeStartupListener(ctx, cfg.Subscription.Listen, cfg.Subscription.Port, cfg.Subscription.Domain,
+		cfg.Subscription.TLSEnabled(), http.MethodHead, cfg.Subscription.Base()+"x-ui-apply-probe-"+hex.EncodeToString(nonce), http.StatusNotFound); err != nil {
+		return fmt.Errorf("Subscription health check failed: %w", err)
+	}
+	return nil
+}
+
+func probeStartupListener(ctx context.Context, listen string, port int, domain string, tlsEnabled bool, method, path string, status int) error {
+	host := strings.Trim(listen, "[]")
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
 	scheme := "http"
-	if cfg.Server.TLSEnabled() {
+	if tlsEnabled {
 		scheme = "https"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+net.JoinHostPort(host, strconv.Itoa(cfg.Server.Port))+"/healthz", nil)
+	req, err := http.NewRequestWithContext(ctx, method, scheme+"://"+net.JoinHostPort(host, strconv.Itoa(port))+path, nil)
 	if err != nil {
 		return err
 	}
-	if cfg.Server.Domain != "" {
-		req.Host = cfg.Server.Domain
+	if domain != "" {
+		req.Host = domain
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // Local liveness probe, with no credentials.
 	defer transport.CloseIdleConnections()
-	response, err := (&http.Client{Transport: transport}).Do(req)
+	response, err := (&http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("Panel health check failed")
+	if response.StatusCode != status {
+		return fmt.Errorf("Unexpected health check status %d", response.StatusCode)
 	}
 	return nil
 }
@@ -382,6 +461,16 @@ func RunPanelRestart(ctx context.Context, directory, id string) error {
 }
 
 func runPanelRestart(ctx context.Context, directory, id string, host panelRestartHost) error {
+	execution, err := maintenanceExecute(directory, "panel", id)
+	if err != nil {
+		return err
+	}
+	defer execution()
+	defer func() {
+		if record, err := readPanelRestart(directory, id); err == nil && !record.Job.active() {
+			_ = maintenanceRelease(directory, "panel", id)
+		}
+	}()
 	unlock, err := acquirePanelLock(directory)
 	if err != nil {
 		return err
@@ -404,6 +493,7 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 		}
 	}
 	_ = os.Setenv("X_UI_CONFIG_DIR", directory)
+	_ = os.Setenv("X_UI_MAINTENANCE_OWNER", "panel:"+id)
 	path := filepath.Join(directory, "config.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -418,6 +508,9 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 	if panelRevision(data) != record.Job.Revision && record.Job.State == "queued" {
 		return finish("failed", "Configuration changed before the restart; no services were restarted.")
 	}
+	if record.Job.State == "queued" && record.Job.Subscription == nil {
+		return finish("failed", "This task was created by an older version. Review Panel and Subscription settings and apply them again; no services were restarted.")
+	}
 	var applyErr error
 	if record.Job.State == "queued" {
 		record.Job.State = "running"
@@ -428,6 +521,15 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 		applyErr = err
 		if applyErr == nil {
 			applyErr = validatePanelSettings(panelSettingsOf(cfg))
+		}
+		if applyErr == nil && record.Job.Subscription != nil {
+			applyErr = validateSubscriptionSettings(subscriptionSettingsOf(cfg))
+		}
+		if applyErr == nil {
+			applyErr = validateStartupListeners(cfg)
+		}
+		if applyErr == nil && (!reflect.DeepEqual(panelSettingsOf(cfg), record.Job.Values) || record.Job.Subscription != nil && !reflect.DeepEqual(subscriptionSettingsOf(cfg), *record.Job.Subscription)) {
+			applyErr = fmt.Errorf("Saved settings no longer match the confirmed task")
 		}
 		if applyErr == nil && connectionChanged(record.Job.Values, record.Job.Previous) {
 			managed, err := locallyManagedPanelAgent(host.AgentDirectory())
@@ -473,11 +575,11 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 		}
 	}
 	record.Job.State = "rolling_back"
-	record.Job.Error = "The saved configuration could not be applied; restoring the previous Panel configuration."
+	record.Job.Error = "The saved configuration could not be applied; restoring the previous startup configuration."
 	if err := write(); err != nil {
 		return err
 	}
-	// Restore only editable Panel keys. Database credentials and unrelated
+	// Restore only editable keys in the confirmed scopes. Database credentials and unrelated
 	// options may have been edited independently since the previous checkpoint.
 	current, err := os.ReadFile(path)
 	if err != nil {
@@ -486,11 +588,20 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 	if record.Job.State == "rolling_back" && panelRevision(current) != record.Job.Revision {
 		// A resumed rollback may already have restored the Panel keys.
 		cfg, parseErr := config.Parse(current)
-		if parseErr != nil || !reflect.DeepEqual(panelSettingsOf(cfg), record.Job.Previous) {
+		if parseErr != nil || !reflect.DeepEqual(panelSettingsOf(cfg), record.Job.Previous) || record.Job.PreviousSubscription != nil && !reflect.DeepEqual(subscriptionSettingsOf(cfg), *record.Job.PreviousSubscription) {
 			return finish("failed", "Configuration was edited during the restart; automatic recovery was stopped to preserve those edits.")
 		}
 	}
-	restored, err := restorePanelDocument(current, record.Before)
+	fields := []panelField{}
+	for _, scope := range record.Job.scopes() {
+		if scope == "panel" {
+			fields = append(fields, (PanelSettings{}).fields()...)
+		}
+		if scope == "subscription" {
+			fields = append(fields, (SubscriptionSettings{}).fields()...)
+		}
+	}
+	restored, err := restoreStartupDocument(current, record.Before, fields)
 	if err == nil {
 		err = (&PanelSettingsService{path: path}).write(restored, current)
 	}
@@ -535,7 +646,7 @@ func runPanelRestart(ctx context.Context, directory, id string, host panelRestar
 	if err := writePanelPrivate(filepath.Join(panelRuntimeDir(directory), "applied.yaml"), restored); err != nil {
 		return err
 	}
-	return finish("rolled_back", "The saved configuration could not be applied. The previous Panel configuration has been restored.")
+	return finish("rolled_back", "The saved configuration could not be applied. The previous startup configuration has been restored.")
 }
 
 func locallyManagedPanelAgent(directory string) (bool, error) {
@@ -597,6 +708,7 @@ func restartPanelProcesses(ctx context.Context, host panelRestartHost, agent boo
 
 func waitPanelProcesses(ctx context.Context, directory string, host panelRestartHost, cfg *config.Config, since time.Time, agent bool) error {
 	values := panelSettingsOf(cfg)
+	subscription := subscriptionSettingsOf(cfg)
 	missing := make(map[string]int)
 	for {
 		ready := true
@@ -614,6 +726,10 @@ func waitPanelProcesses(ctx context.Context, directory string, host panelRestart
 				missing[kind] = 0
 			}
 			if err != nil || readPanelJSON(filepath.Join(panelRuntimeDir(directory), kind+".json"), &process) != nil || process.PID != pid || process.StartedAt.Before(since) || !panelProcessSettingsAgree(kind, process.Settings, values) {
+				ready = false
+				break
+			}
+			if kind == "api" && (process.Subscription == nil || !reflect.DeepEqual(*process.Subscription, subscription)) {
 				ready = false
 				break
 			}
@@ -638,6 +754,10 @@ func waitPanelProcesses(ctx context.Context, directory string, host panelRestart
 }
 
 func restorePanelDocument(current, before []byte) ([]byte, error) {
+	return restoreStartupDocument(current, before, (PanelSettings{}).fields())
+}
+
+func restoreStartupDocument(current, before []byte, fields []panelField) ([]byte, error) {
 	var target, baseline yaml.Node
 	if err := yaml.Unmarshal(current, &target); err != nil {
 		return nil, err
@@ -649,7 +769,7 @@ func restorePanelDocument(current, before []byte) ([]byte, error) {
 		target.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
 		target.Kind = yaml.DocumentNode
 	}
-	for _, field := range (PanelSettings{}).fields() {
+	for _, field := range fields {
 		var old *yaml.Node
 		if len(baseline.Content) > 0 {
 			if section := findYAMLValue(baseline.Content[0], field.section); section != nil {

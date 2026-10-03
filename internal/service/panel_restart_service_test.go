@@ -20,12 +20,13 @@ import (
 )
 
 type fakePanelHost struct {
-	directory     string
-	scheduled     int
-	units         []string
-	failPort      int
-	failSchedule  bool
-	duringRestart func()
+	directory            string
+	scheduled            int
+	units                []string
+	failPort             int
+	failSubscriptionPort int
+	failSchedule         bool
+	duringRestart        func()
 }
 
 func (*fakePanelHost) Available() (bool, string) { return true, "" }
@@ -45,12 +46,17 @@ func (host *fakePanelHost) Restart(_ context.Context, unit string) error {
 	if err != nil {
 		return err
 	}
-	if unit == "x-ui-api" && cfg.Server.Port == host.failPort {
+	if unit == "x-ui-api" && (cfg.Server.Port == host.failPort || cfg.Subscription.Port == host.failSubscriptionPort) {
 		return errors.New("address in use")
 	}
 	kind := strings.TrimPrefix(unit, "x-ui-")
+	var subscription *SubscriptionSettings
+	if kind == "api" {
+		values := subscriptionSettingsOf(cfg)
+		subscription = &values
+	}
 	return writePanelJSON(filepath.Join(panelRuntimeDir(host.directory), kind+".json"), PanelProcessRuntime{
-		PID: 100 + len(host.units), StartedAt: time.Now().UTC(), Settings: panelSettingsOf(cfg),
+		PID: 100 + len(host.units), StartedAt: time.Now().UTC(), Settings: panelSettingsOf(cfg), Subscription: subscription,
 	})
 }
 func (host *fakePanelHost) PID(_ context.Context, unit string) (int, error) {
@@ -354,6 +360,7 @@ func TestPanelRestartHealthUsesRootPathWithCustomWebPath(t *testing.T) {
 	defer server.Close()
 	host, port, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
 	cfg := config.Default()
+	cfg.Subscription.Enabled = false
 	cfg.Server.Listen, cfg.Server.Domain, cfg.Server.BasePath = host, "panel.example", "/control/"
 	cfg.Server.Port, _ = strconv.Atoi(port)
 	if err := (systemdPanelHost{}).Healthy(context.Background(), cfg); err != nil {

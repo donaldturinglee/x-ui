@@ -37,6 +37,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 RELEASE_DIR="${RELEASE_DIR:-release}"
+if [[ ! "${VERSION}" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  echo 'The release version contains unsupported characters.' >&2
+  exit 1
+fi
 
 # Checked before anything is built, so a mistyped name fails now rather than
 # after the panel's build.
@@ -90,6 +94,7 @@ for platform in "${PLATFORMS[@]}"; do
   cp migrations/*.sql "${dir}/migrations/"
   cp -R "${STAGE}/panel" "${dir}/web/build"
   cp x-ui.sh x-ui-api.service x-ui-worker.service x-ui-agent.service "${dir}/"
+  printf '{"version":"%s","platform":"%s","upgradeProtocol":1}\n' "${VERSION}" "${platform}" >"${dir}/release.json"
 
   # Owned by root and writable by root alone, whoever built it. tar restores the
   # owner an archive records when root unpacks it, and a binary left owned by the
@@ -102,7 +107,7 @@ for platform in "${PLATFORMS[@]}"; do
   tar --append --file "${tarball}" --sort=name --owner=0 --group=0 --numeric-owner \
     --mode='u=rwX,go=rX' -C "${root}" x-ui/migrations x-ui/web \
     x-ui/x-ui-api.service x-ui/x-ui-worker.service \
-    x-ui/x-ui-agent.service
+    x-ui/x-ui-agent.service x-ui/release.json
   gzip -9 -n -f "${tarball}"
   echo "packaged ${tarball}.gz"
 done

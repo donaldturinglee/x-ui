@@ -3,6 +3,9 @@ import useSWRMutation from "swr/mutation";
 import { z } from "zod";
 
 import { request, RequestError } from "@/lib/request";
+import type { SubscriptionSettings } from "./subscription";
+
+export type SettingsScope = "panel" | "subscription";
 
 export interface PanelSettings {
     listen: string;
@@ -31,6 +34,9 @@ export interface PanelSettingsState {
     restartSupported?: boolean;
     restartUnavailableReason?: string;
     restartJob?: PanelRestartJob;
+    pendingScopes?: SettingsScope[];
+    savedSubscription?: SubscriptionSettings;
+    runningSubscription?: SubscriptionSettings;
 }
 
 export interface PanelRestartJob {
@@ -42,6 +48,9 @@ export interface PanelRestartJob {
     finishedAt?: string;
     values: PanelSettings;
     previous: PanelSettings;
+    subscription?: SubscriptionSettings;
+    previousSubscription?: SubscriptionSettings;
+    scopes?: SettingsScope[];
     error?: string;
 }
 
@@ -50,7 +59,12 @@ export const isPanelRestartActive = (job?: PanelRestartJob | null) =>
 
 // Preserve the browser's public host and protocol behind a reverse proxy.
 // Only changes to the corresponding listener fields alter the candidate URL.
-export const panelAccessUrl = (values: PanelSettings, previous: PanelSettings, current: string) => {
+export const panelAccessUrl = (
+    values: PanelSettings,
+    previous: PanelSettings,
+    current: string,
+    tab = "panel",
+) => {
     const url = new URL(current);
     if (values.domain !== previous.domain && values.domain) url.hostname = values.domain;
     const tlsChanged =
@@ -60,7 +74,7 @@ export const panelAccessUrl = (values: PanelSettings, previous: PanelSettings, c
     if (values.port !== previous.port || tlsChanged) url.port = String(values.port);
     if (values.basePath !== previous.basePath) {
         url.pathname = `${values.basePath}general/settings`;
-        url.search = "?tab=panel";
+        url.search = `?tab=${tab}`;
     }
     return url.href;
 };
@@ -177,15 +191,15 @@ export const useSavePanelSettings = () =>
 
 export const useRestartPanelSettings = () =>
     useSWRMutation(
-        `${PANEL_SETTINGS_KEY}/restart`,
-        (key: string, { arg }: { arg: { revision: string } }) =>
+        "/settings/apply",
+        (key: string, { arg }: { arg: { revision: string; scopes: SettingsScope[] } }) =>
             request.post<PanelRestartJob>(key, arg),
         { throwOnError: false },
     );
 
 export const usePanelRestartJob = (id: string | undefined, onFinished: () => void) =>
     useSWR<PanelRestartJob, Error>(
-        id ? `${PANEL_SETTINGS_KEY}/restart/${id}` : null,
+        id ? `/settings/apply/${id}` : null,
         (key: string) => request.get<PanelRestartJob>(key),
         {
             refreshInterval: (job) => (isPanelRestartActive(job) ? 1500 : 0),

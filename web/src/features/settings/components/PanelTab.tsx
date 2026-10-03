@@ -1,26 +1,25 @@
 import { Button, InlineMessage, Text } from "@gamecrafters/base-ui/react";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
+import { useSWRConfig } from "swr";
 
 import { FilledSelect, FilledTextInput } from "@/components/FilledField";
 
 import { useStartupSettings } from "../api";
 import {
     fromPanelSettings,
-    isPanelRestartActive,
-    panelAccessUrl,
     PANEL_LOG_LEVELS,
     panelSettingsRequest,
     usePanelSettings,
     useSavePanelSettings,
-    useRestartPanelSettings,
-    usePanelRestartJob,
     type PanelForm,
-    type PanelRestartJob,
 } from "../api/panel";
 
 import { FIELDS, FOOTER, PLAIN_BUTTON, SAVE_BUTTON } from "./layout";
 import { PanelRestartDialog } from "./PanelRestartDialog";
-import { RequestError } from "@/lib/request";
+import { useSettingsApplication } from "./useSettingsApplication";
+import { SettingsApplicationStatus } from "./SettingsApplicationStatus";
+import { startupChanges } from "./startupChanges";
+import { SUBSCRIPTION_SETTINGS_KEY, subscriptionPublicBase } from "../api/subscription";
 
 const PANEL_FIELDS: { key: keyof PanelForm; label: string; numeric?: boolean; min?: number }[] = [
     { key: "listen", label: "Address" },
@@ -60,6 +59,7 @@ const EMPTY_FORM: PanelForm = {
 
 export const PanelTab = () => {
     const id = useId();
+    const { mutate } = useSWRConfig();
     const { data, error: readError, isLoading, mutate: refresh } = usePanelSettings();
     const { data: startup } = useStartupSettings();
     const {
@@ -73,39 +73,13 @@ export const PanelTab = () => {
     const [draft, setDraft] = useState<{ values: PanelForm; revision: string } | null>(null);
     const [savedMessage, setSavedMessage] = useState(false);
     const [confirmRestart, setConfirmRestart] = useState(false);
-    const [submittedJob, setSubmittedJob] = useState<PanelRestartJob | null>(null);
-    const [timedOutJob, setTimedOutJob] = useState<string | null>(null);
     const restartButton = useRef<HTMLButtonElement>(null);
-    const {
-        trigger: restart,
-        isMutating: isScheduling,
-        error: restartError,
-    } = useRestartPanelSettings();
-    const followedJob =
-        submittedJob &&
-        (!data?.restartJob ||
-            Date.parse(submittedJob.requestedAt) > Date.parse(data.restartJob.requestedAt))
-            ? submittedJob
-            : data?.restartJob;
-    const { data: polledJob, error: reconnectError } = usePanelRestartJob(followedJob?.id, () => {
-        void refresh();
-    });
-    const job = polledJob ?? followedJob;
-    const isRestarting = isScheduling || isPanelRestartActive(job);
-    const targetUrl = data
-        ? panelAccessUrl(data.saved, data.running, window.location.href)
-        : window.location.href;
-    const jobUrl = job ? panelAccessUrl(job.values, job.previous, window.location.href) : targetUrl;
+    const application = useSettingsApplication(
+        data && { ...data, savedPanel: data.saved, runningPanel: data.running },
+        "panel",
+    );
+    const { isRestarting, targetUrl } = application;
     const addressChanged = targetUrl !== window.location.href;
-    const connectionTimedOut = Boolean(job && reconnectError && timedOutJob === job.id);
-    useEffect(() => {
-        if (!job || !isPanelRestartActive(job)) return;
-        const timer = window.setTimeout(
-            () => setTimedOutJob(job.id),
-            Math.max(0, Date.parse(job.requestedAt) + 180000 - Date.now()),
-        );
-        return () => window.clearTimeout(timer);
-    }, [job]);
 
     const saved = data ? fromPanelSettings(data.saved) : EMPTY_FORM;
     const values = draft?.values ?? saved;
@@ -134,15 +108,14 @@ export const PanelTab = () => {
         ) {
             setDraft(null);
             setSavedMessage(true);
+            void mutate(SUBSCRIPTION_SETTINGS_KEY);
         }
     };
 
     const onRestart = async () => {
         setConfirmRestart(false);
         if (!data || disabled || isChanged || !data.restartRequired) return;
-        const accepted = await restart({ revision: data.revision });
-        if (accepted) setSubmittedJob(accepted);
-        void refresh();
+        await application.apply();
     };
 
     return (
@@ -175,45 +148,10 @@ export const PanelTab = () => {
                             "Automatic restart is unavailable in this environment. Use x-ui restart on the server."}
                     </InlineMessage>
                 )}
-                {job && (job.state !== "succeeded" || !data?.restartRequired) && (
-                    <InlineMessage
-                        variant={
-                            job.state === "failed" ||
-                            job.state === "rolled_back" ||
-                            connectionTimedOut
-                                ? "warning"
-                                : undefined
-                        }
-                        className="mb-4"
-                    >
-                        {job.state === "queued" &&
-                            "Restart scheduled. Waiting for the panel to restart."}
-                        {job.state === "running" && "Restarting the panel and reconnecting…"}
-                        {job.state === "rolling_back" &&
-                            "Restoring the previous configuration and reconnecting…"}
-                        {job.state === "succeeded" &&
-                            !data?.restartRequired &&
-                            "Panel restarted. Saved settings are now applied."}
-                        {(job.state === "failed" || job.state === "rolled_back") && job.error}
-                        {connectionTimedOut &&
-                            " Unable to reconnect. The server's restart result has not been confirmed."}
-                        {reconnectError instanceof RequestError &&
-                            reconnectError.status === 401 &&
-                            " Sign in again to check the restart result."}
-                        {isPanelRestartActive(job) && jobUrl !== window.location.href && (
-                            <p className="mt-2">
-                                <a href={jobUrl} className="break-all underline">
-                                    Open updated panel: {jobUrl}
-                                </a>
-                            </p>
-                        )}
-                    </InlineMessage>
-                )}
-                {restartError && (
-                    <InlineMessage variant="critical" className="mb-4">
-                        {restartError.message}
-                    </InlineMessage>
-                )}
+                <SettingsApplicationStatus
+                    application={application}
+                    restartRequired={data?.restartRequired}
+                />
                 {startup && !startup.session.secretSet && (
                     <InlineMessage variant="warning" className="mb-4">
                         No session secret is configured, so one is made at every start and every
@@ -329,6 +267,26 @@ export const PanelTab = () => {
                         void onRestart();
                     }}
                     returnFocusRef={restartButton}
+                    scopes={data?.pendingScopes}
+                    changes={
+                        data
+                            ? startupChanges(
+                                  data.pendingScopes ?? ["panel"],
+                                  data.saved,
+                                  data.running,
+                                  data.savedSubscription,
+                                  data.runningSubscription,
+                              )
+                            : []
+                    }
+                    subscriptionUri={
+                        data?.savedSubscription
+                            ? subscriptionPublicBase(
+                                  data.savedSubscription,
+                                  window.location.hostname,
+                              )
+                            : undefined
+                    }
                 />
             )}
         </form>
