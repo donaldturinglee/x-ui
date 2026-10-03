@@ -13,7 +13,7 @@ import (
 type ClientFilter struct {
 	// Group, when set, restricts the listing to one group.
 	Group string
-	// Search matches the name, description or remark, case-insensitively.
+	// Search matches the name or description, case-insensitively.
 	Search string
 	// Enabled, when set, restricts to enabled or disabled clients.
 	Enabled *bool
@@ -34,7 +34,7 @@ type ClientRepository struct {
 // row sends the set back whole -- the API replaces it rather than merging -- so
 // a listing without it is an edit that cuts the client off from every listener.
 var listColumns = []string{
-	"id", "enable", "name", "description", "group_name", "remark", "inbounds",
+	"id", "enable", "name", "description", "group_name", "inbounds",
 	"volume", "expiry", "up", "down", "total_up", "total_down",
 	"created_at", "online_at", "delay_start", "auto_reset", "reset_days", "next_reset",
 }
@@ -50,7 +50,7 @@ func filtered(query *gorm.DB, filter ClientFilter) *gorm.DB {
 		// ILIKE rather than LIKE: an operator looking for a client by name
 		// should not have to reproduce its capitalisation.
 		pattern := "%" + filter.Search + "%"
-		query = query.Where("name ILIKE ? OR description ILIKE ? OR remark ILIKE ?", pattern, pattern, pattern)
+		query = query.Where("name ILIKE ? OR description ILIKE ?", pattern, pattern)
 	}
 	if filter.Enabled != nil {
 		query = query.Where("enable = ?", *filter.Enabled)

@@ -86,12 +86,13 @@ func (s *LinkService) linksFor(ctx context.Context, client *domain.Client, hostn
 	}
 
 	links := make([]string, 0, len(inbounds))
+	taken := nodeNames()
 	for i := range inbounds {
 		inbound := &inbounds[i]
 		if !HasLink(inbound.Type) {
 			continue
 		}
-		generated, err := GenerateLinks(client, inbound, hostname)
+		generated, err := generateLinks(client, inbound, hostname, taken)
 		if err != nil {
 			logger.Warning("unable to build links for inbound ", inbound.Tag,
 				" and client ", client.Name, ": ", err)
@@ -119,6 +120,10 @@ func clientInboundIds(client *domain.Client) ([]uint, error) {
 // address when the inbound publishes none of its own -- a panel and its nodes
 // are often the same host, and this saves configuring the obvious.
 func GenerateLinks(client *domain.Client, inbound *domain.Inbound, hostname string) ([]string, error) {
+	return generateLinks(client, inbound, hostname, nodeNames())
+}
+
+func generateLinks(client *domain.Client, inbound *domain.Inbound, hostname string, taken map[string]bool) ([]string, error) {
 	if !HasLink(inbound.Type) {
 		return nil, nil
 	}
@@ -141,13 +146,15 @@ func GenerateLinks(client *domain.Client, inbound *domain.Inbound, hostname stri
 		}
 	}
 
-	addrs, err := inboundAddresses(inbound, hostname, client.Remark, options, prepareTLS)
+	addrs, err := inboundAddresses(inbound, hostname, client.Name, options, prepareTLS)
 	if err != nil {
 		return nil, err
 	}
 	if len(addrs) == 0 {
 		return nil, nil
 	}
+	baseAddrs := addrs
+	addrs = nameAddresses(addrs, taken)
 
 	switch inbound.Type {
 	case "socks":
@@ -159,7 +166,7 @@ func GenerateLinks(client *domain.Client, inbound *domain.Inbound, hostname stri
 		// subscriber gets a link for each rather than being made to guess.
 		return append(
 			socksLinks(identities["socks"], addrs),
-			httpLinks(identities["http"], addrs)...,
+			httpLinks(identities["http"], nameAddresses(baseAddrs, taken))...,
 		), nil
 	case "shadowsocks":
 		return shadowsocksLinks(identities, options, outJSON, addrs), nil
@@ -189,7 +196,7 @@ func GenerateLinks(client *domain.Client, inbound *domain.Inbound, hostname stri
 func inboundAddresses(
 	inbound *domain.Inbound,
 	hostname string,
-	clientRemark string,
+	clientName string,
 	options map[string]interface{},
 	prepare func(server, client domain.JSON) map[string]interface{},
 ) ([]inboundAddress, error) {
@@ -216,13 +223,13 @@ func inboundAddresses(
 		addr := inboundAddress{
 			Server:     hostname,
 			ServerPort: int(port),
-			Remark:     joinRemark(clientRemark, inbound.Tag),
+			Remark:     clientName,
 			TLS:        tls,
 		}
 		addrs = []inboundAddress{addr}
 	} else {
 		for i := range addrs {
-			addrs[i].Remark = joinRemark(clientRemark, inbound.Tag+addrs[i].Remark)
+			addrs[i].Remark = clientName + addrs[i].Remark
 			if tls == nil {
 				continue
 			}
@@ -245,13 +252,15 @@ func inboundAddresses(
 	return addrs, nil
 }
 
-// joinRemark prefixes a node's name with the subscriber's own alias, so
-// everyone sees their nodes named for them rather than for the server.
-func joinRemark(clientRemark string, inboundRemark string) string {
-	if clientRemark != "" {
-		return clientRemark + "-" + inboundRemark
+// nameAddresses gives every imported link a unique name without modifying the
+// base addresses, which a mixed listener uses once for each protocol.
+func nameAddresses(addrs []inboundAddress, taken map[string]bool) []inboundAddress {
+	named := append([]inboundAddress(nil), addrs...)
+	for i := range named {
+		named[i].Remark = uniqueTag(named[i].Remark, taken)
+		taken[named[i].Remark] = true
 	}
-	return inboundRemark
+	return named
 }
 
 // prepareTLS folds the server half of a listener's TLS into the client half.

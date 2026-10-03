@@ -27,7 +27,6 @@ const validRequest: ClientRequest = {
     enable: true,
     desc: "",
     group: "",
-    remark: "",
     volume: 10,
     expiry: "",
     delayStart: false,

@@ -44,12 +44,11 @@ func withTLS(t *testing.T, inbound *domain.Inbound, server string, client string
 	return inbound
 }
 
-func buildClient(t *testing.T, name string, remark string, config string) *domain.Client {
+func buildClient(t *testing.T, name string, config string) *domain.Client {
 	t.Helper()
 	return &domain.Client{
 		Id:     1,
 		Name:   name,
-		Remark: remark,
 		Config: domain.JSON(config),
 	}
 }
@@ -97,7 +96,7 @@ func TestVlessLinkCarriesTransportAndTls(t *testing.T) {
 		`{"enabled": true, "server_name": "cdn.example.com", "alpn": ["h2", "http/1.1"]}`,
 		`{"utls": {"fingerprint": "chrome"}}`,
 	)
-	client := buildClient(t, "alice", "AL", `{"vless": {"uuid": "11111111-2222-3333-4444-555555555555"}}`)
+	client := buildClient(t, "alice", `{"vless": {"uuid": "11111111-2222-3333-4444-555555555555"}}`)
 
 	links := generate(t, client, inbound, "panel.example.com")
 	if len(links) != 1 {
@@ -114,9 +113,9 @@ func TestVlessLinkCarriesTransportAndTls(t *testing.T) {
 	if u.Host != "panel.example.com:443" {
 		t.Errorf("host = %q, want the request host and the listening port", u.Host)
 	}
-	// The remark is what the subscriber sees in their client's node list.
-	if u.Fragment != "AL-edge" {
-		t.Errorf("fragment = %q, want %q", u.Fragment, "AL-edge")
+	// Imported nodes use the subscriber's name, independently of the inbound tag.
+	if u.Fragment != "alice" {
+		t.Errorf("fragment = %q, want %q", u.Fragment, "alice")
 	}
 
 	q := u.Query()
@@ -137,7 +136,7 @@ func TestVlessLinkCarriesTransportAndTls(t *testing.T) {
 
 func TestVlessFlowOnlyOverRawTcp(t *testing.T) {
 	tls := `{"enabled": true, "server_name": "a.example.com"}`
-	client := buildClient(t, "alice", "", `{"vless": {"uuid": "u", "flow": "xtls-rprx-vision"}}`)
+	client := buildClient(t, "alice", `{"vless": {"uuid": "u", "flow": "xtls-rprx-vision"}}`)
 
 	t.Run("tcp advertises flow", func(t *testing.T) {
 		inbound := withTLS(t, buildInbound(t, "vless", "direct", `{"listen_port": 443, "transport": {"type": "tcp"}}`), tls, "")
@@ -165,7 +164,7 @@ func TestRealityReplacesTls(t *testing.T) {
 		`{"enabled": true, "server_name": "www.example.com", "reality": {"enabled": true, "short_id": ["abcd"]}}`,
 		`{"reality": {"public_key": "PUBKEY"}}`,
 	)
-	client := buildClient(t, "alice", "", `{"vless": {"uuid": "u"}}`)
+	client := buildClient(t, "alice", `{"vless": {"uuid": "u"}}`)
 
 	q := parseLink(t, generate(t, client, inbound, "h")[0]).Query()
 	if q.Get("security") != "reality" {
@@ -184,7 +183,7 @@ func TestAClientHalfAloneIsNoTLS(t *testing.T) {
 	// the listener terminating any: the server half is what says there is some.
 	inbound := buildInbound(t, "trojan", "plain", `{"listen_port": 443}`)
 	inbound.OutJson = domain.JSON(`{"tls": {"utls": {"enabled": true, "fingerprint": "chrome"}}}`)
-	client := buildClient(t, "alice", "", `{"trojan": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"trojan": {"password": "pw"}}`)
 
 	q := parseLink(t, generate(t, client, inbound, "h")[0]).Query()
 	if q.Get("security") != "" || q.Get("fp") != "" {
@@ -203,7 +202,7 @@ func TestPrivateKeysNeverReachALink(t *testing.T) {
 		}`,
 		`{"reality": {"public_key": "PUBKEY"}}`,
 	)
-	client := buildClient(t, "alice", "", `{"vless": {"uuid": "u"}}`)
+	client := buildClient(t, "alice", `{"vless": {"uuid": "u"}}`)
 
 	link := generate(t, client, inbound, "h")[0]
 	// Only the fields that describe the handshake cross from the server half to
@@ -297,7 +296,7 @@ func TestPublishedAddressesEachProduceALink(t *testing.T) {
 		{"server": "a.example.com", "server_port": 443, "remark": "-eu"},
 		{"server": "b.example.com", "server_port": 8443, "remark": "-us"}
 	]`)
-	client := buildClient(t, "alice", "AL", `{"trojan": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"trojan": {"password": "pw"}}`)
 
 	links := generate(t, client, inbound, "ignored.example.com")
 	if len(links) != 2 {
@@ -309,8 +308,8 @@ func TestPublishedAddressesEachProduceALink(t *testing.T) {
 	if first.Host != "a.example.com:443" || second.Host != "b.example.com:8443" {
 		t.Errorf("hosts = %q, %q; want the published addresses, not the request host", first.Host, second.Host)
 	}
-	if first.Fragment != "AL-multi-eu" || second.Fragment != "AL-multi-us" {
-		t.Errorf("fragments = %q, %q; want client, inbound and address names joined", first.Fragment, second.Fragment)
+	if first.Fragment != "alice-eu" || second.Fragment != "alice-us" {
+		t.Errorf("fragments = %q, %q; want client name and address labels", first.Fragment, second.Fragment)
 	}
 }
 
@@ -321,7 +320,7 @@ func TestPerAddressTlsOverridesDoNotLeakBetweenAddresses(t *testing.T) {
 		{"server": "a.example.com", "server_port": 443, "tls": {"server_name": "a-override.example.com"}},
 		{"server": "b.example.com", "server_port": 443}
 	]`)
-	client := buildClient(t, "alice", "", `{"trojan": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"trojan": {"password": "pw"}}`)
 
 	links := generate(t, client, inbound, "h")
 	if len(links) != 2 {
@@ -344,7 +343,7 @@ func TestAwkwardCredentialsSurvive(t *testing.T) {
 	const password = "p ss#w%rd/ü"
 
 	inbound := buildInbound(t, "trojan", "edge", `{"listen_port": 443, "transport": {"type": "tcp"}}`)
-	client := buildClient(t, "alice", "", `{"trojan": {"password": "`+password+`"}}`)
+	client := buildClient(t, "alice", `{"trojan": {"password": "`+password+`"}}`)
 
 	links := generate(t, client, inbound, "h.example.com")
 	if len(links) != 1 {
@@ -363,7 +362,7 @@ func TestAwkwardCredentialsSurvive(t *testing.T) {
 func TestIpv6AddressesAreBracketedInTheAuthority(t *testing.T) {
 	inbound := buildInbound(t, "trojan", "v6", `{"listen_port": 443, "transport": {"type": "tcp"}}`)
 	inbound.Addrs = domain.JSON(`[{"server": "[2001:db8::1]", "server_port": 443}]`)
-	client := buildClient(t, "alice", "", `{"trojan": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"trojan": {"password": "pw"}}`)
 
 	u := parseLink(t, generate(t, client, inbound, "h")[0])
 	// Without the brackets the port is unparseable and the link is useless.
@@ -377,7 +376,7 @@ func TestIpv6AddressesAreBracketedInTheAuthority(t *testing.T) {
 
 func TestShadowsocksUsesSip002Userinfo(t *testing.T) {
 	inbound := buildInbound(t, "shadowsocks", "ss", `{"listen_port": 8388, "method": "aes-256-gcm"}`)
-	client := buildClient(t, "alice", "", `{"shadowsocks": {"password": "userpass"}}`)
+	client := buildClient(t, "alice", `{"shadowsocks": {"password": "userpass"}}`)
 
 	link := generate(t, client, inbound, "h.example.com")[0]
 	if !strings.HasPrefix(link, "ss://") {
@@ -405,7 +404,7 @@ func TestShadowsocks2022CombinesServerAndUserPassword(t *testing.T) {
 	}`)
 	// A 2022 method stores its identity under its own key, because the key
 	// length differs from the older methods.
-	client := buildClient(t, "alice", "", `{"shadowsocks16": {"password": "userpass"}}`)
+	client := buildClient(t, "alice", `{"shadowsocks16": {"password": "userpass"}}`)
 
 	link := generate(t, client, inbound, "h")[0]
 	encoded := strings.TrimPrefix(link, "ss://")
@@ -425,7 +424,7 @@ func TestVmessIsABase64Object(t *testing.T) {
 		"listen_port": 443,
 		"transport": {"type": "grpc", "service_name": "GunService"}
 	}`), `{"enabled": true, "server_name": "vm.example.com"}`, "")
-	client := buildClient(t, "alice", "AL", `{"vmess": {"uuid": "vmess-uuid"}}`)
+	client := buildClient(t, "alice", `{"vmess": {"uuid": "vmess-uuid"}}`)
 
 	link := generate(t, client, inbound, "h.example.com")[0]
 	if !strings.HasPrefix(link, "vmess://") {
@@ -444,8 +443,8 @@ func TestVmessIsABase64Object(t *testing.T) {
 	if obj["id"] != "vmess-uuid" || obj["add"] != "h.example.com" || obj["port"] != "443" {
 		t.Errorf("payload = %v, want the uuid, address and port", obj)
 	}
-	if obj["ps"] != "AL-vm" {
-		t.Errorf("ps = %v, want the joined remark", obj["ps"])
+	if obj["ps"] != "alice" {
+		t.Errorf("ps = %v, want the client name", obj["ps"])
 	}
 	if obj["tls"] != "tls" || obj["sni"] != "vm.example.com" {
 		t.Errorf("payload = %v, want TLS reported", obj)
@@ -459,7 +458,7 @@ func TestVmessIsABase64Object(t *testing.T) {
 
 func TestMixedInboundOffersBothProtocols(t *testing.T) {
 	inbound := buildInbound(t, "mixed", "mix", `{"listen_port": 1080}`)
-	client := buildClient(t, "alice", "", `{
+	client := buildClient(t, "alice", `{
 		"socks": {"username": "u", "password": "p"},
 		"http": {"username": "u", "password": "p"}
 	}`)
@@ -485,7 +484,7 @@ func TestHttpLinkSchemeFollowsEachAddress(t *testing.T) {
 		{"server": "secure.example.com", "server_port": 443},
 		{"server": "plain.example.com", "server_port": 8080}
 	]`)
-	client := buildClient(t, "alice", "", `{"http": {"username": "u", "password": "p"}}`)
+	client := buildClient(t, "alice", `{"http": {"username": "u", "password": "p"}}`)
 
 	links := generate(t, client, inbound, "h")
 	// Both addresses inherit the inbound's TLS here, so both are https. The
@@ -506,7 +505,7 @@ func TestHysteriaBandwidthIsReversedForTheClient(t *testing.T) {
 		"obfs": {"type": "salamander", "password": "obfspw"}
 	}`)
 	inbound.OutJson = domain.JSON(`{"server_ports": ["443:445", 8443]}`)
-	client := buildClient(t, "alice", "", `{"hysteria2": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"hysteria2": {"password": "pw"}}`)
 
 	q := parseLink(t, generate(t, client, inbound, "h")[0]).Query()
 	// The server's upload limit is the client's download limit.
@@ -528,7 +527,7 @@ func TestMissingOutJsonIsNotAnError(t *testing.T) {
 	// one. Treating it as a failure produced a subscription that silently came
 	// back short.
 	inbound := buildInbound(t, "hysteria2", "hy", `{"listen_port": 443}`)
-	client := buildClient(t, "alice", "", `{"hysteria2": {"password": "pw"}}`)
+	client := buildClient(t, "alice", `{"hysteria2": {"password": "pw"}}`)
 
 	links := generate(t, client, inbound, "h")
 	if len(links) != 1 {
@@ -542,7 +541,7 @@ func TestMissingOutJsonIsNotAnError(t *testing.T) {
 func TestUnreadableInboundIsReported(t *testing.T) {
 	inbound := buildInbound(t, "vless", "broken", `{"listen_port": 443}`)
 	inbound.Addrs = domain.JSON(`{"not": "a list"}`)
-	client := buildClient(t, "alice", "", `{"vless": {"uuid": "u"}}`)
+	client := buildClient(t, "alice", `{"vless": {"uuid": "u"}}`)
 
 	// Reported rather than returned as an empty list: the caller decides
 	// whether to skip this inbound or fail, and either way it is not silent.
@@ -553,7 +552,7 @@ func TestUnreadableInboundIsReported(t *testing.T) {
 
 func TestInboundWithoutLinksProducesNone(t *testing.T) {
 	inbound := buildInbound(t, "tun", "tun0", `{"interface_name": "tun0"}`)
-	client := buildClient(t, "alice", "", `{}`)
+	client := buildClient(t, "alice", `{}`)
 
 	links := generate(t, client, inbound, "h")
 	if len(links) != 0 {
@@ -561,14 +560,26 @@ func TestInboundWithoutLinksProducesNone(t *testing.T) {
 	}
 }
 
-func TestJoinRemark(t *testing.T) {
-	if got := joinRemark("AL", "edge"); got != "AL-edge" {
-		t.Errorf("joinRemark(AL, edge) = %q, want AL-edge", got)
-	}
-	// A subscriber with no alias gets the node's own name rather than a link
-	// whose title starts with a dash.
-	if got := joinRemark("", "edge"); got != "edge" {
-		t.Errorf("joinRemark(\"\", edge) = %q, want edge", got)
+func TestImportedLinksHaveUniqueClientNames(t *testing.T) {
+	for _, protocol := range []string{"trojan", "mixed"} {
+		t.Run(protocol, func(t *testing.T) {
+			inbound := buildInbound(t, protocol, "inbound-tag", `{"listen_port": 1080}`)
+			inbound.Addrs = domain.JSON(`[{"server":"one.example.com","server_port":1080},{"server":"two.example.com","server_port":1080}]`)
+			client := buildClient(t, "alice", `{"trojan":{"password":"pw"},"socks":{"username":"alice","password":"pw"},"http":{"username":"alice","password":"pw"}}`)
+			links := generate(t, client, inbound, "ignored.example.com")
+			want := []string{"alice", "alice-2"}
+			if protocol == "mixed" {
+				want = append(want, "alice-3", "alice-4")
+			}
+			if len(links) != len(want) {
+				t.Fatalf("got %d links, want %d", len(links), len(want))
+			}
+			for i, link := range links {
+				if name := parseLink(t, link).Fragment; name != want[i] {
+					t.Errorf("link %d name = %q, want %q", i, name, want[i])
+				}
+			}
+		})
 	}
 }
 

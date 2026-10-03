@@ -609,7 +609,7 @@ listener. Their credentials stay out of it.
 
 Adding and editing a subscriber happen in the reference's dialog, in its three
 tabs. The first holds who they are and what they have, in the reference's rows:
-whether they may connect and their group, their name, description and remark,
+whether they may connect and their group, their name and description,
 their quota and expiry, whether their clock waits for their first byte and
 whether their quota repeats, with the days either asks for, and the listeners
 they connect through as chips in one field across the foot. Editing, it also
@@ -880,6 +880,14 @@ would otherwise break link generation for everyone on the panel.
 
 They are computed on read rather than stored, so an edit to an inbound is
 reflected the next time a subscription is fetched.
+
+Subscription titles and imported node names use the subscriber's `name`.
+Published address labels are appended to it; repeated node names receive
+numbered suffixes (`name-2`, `name-3`). Selector and built-in destination names
+are reserved so subscribers named `Proxy`, `Auto` or `direct` still produce a
+valid configuration. There is no separate subscriber display alias. Migration
+003 removes the former `clients.remark` column; restoring its old values
+requires a database backup.
 
 ## Identities and the cascade
 

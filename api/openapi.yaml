@@ -469,7 +469,7 @@ paths:
       summary: List subscribers
       parameters:
         - { in: query, name: group, schema: { type: string } }
-        - { in: query, name: search, schema: { type: string }, description: Matches name, description or remark, case-insensitively. }
+        - { in: query, name: search, schema: { type: string }, description: Matches name or description, case-insensitively. }
         - { in: query, name: enabled, schema: { type: boolean } }
         - { in: query, name: limit, schema: { type: integer, default: 100, maximum: 1000 } }
         - { in: query, name: offset, schema: { type: integer, default: 0 } }
@@ -2297,7 +2297,6 @@ components:
         expiry: { type: integer, format: int64, minimum: 0, description: "Unix seconds; 0 never expires." }
         desc: { type: string, maxLength: 500 }
         group: { type: string, maxLength: 64 }
-        remark: { type: string, maxLength: 500 }
         delayStart: { type: boolean, description: Hold the clock until the first byte. }
         autoReset: { type: boolean }
         resetDays: { type: integer, minimum: 0, maximum: 365 }

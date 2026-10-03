@@ -327,7 +327,6 @@ func (s *ClientService) validate(ctx context.Context, client *domain.Client) err
 	v.MaxLen("name", client.Name, 64)
 	v.MaxLen("desc", client.Desc, 500)
 	v.MaxLen("group", client.Group, 64)
-	v.MaxLen("remark", client.Remark, 500)
 	v.NonNegative("volume", client.Volume)
 	v.NonNegative("expiry", client.Expiry)
 	v.Range("resetDays", int64(client.ResetDays), 0, maxResetDays)

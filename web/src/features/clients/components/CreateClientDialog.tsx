@@ -39,7 +39,6 @@ export const CreateClientDialog = ({ onClose, returnFocusRef }: CreateClientDial
             enable: true,
             desc: "",
             group: "",
-            remark: "",
             volume: 0,
             expiry: "",
             delayStart: false,

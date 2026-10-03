@@ -91,7 +91,6 @@ export const ClientFields = ({
     const groupId = useId();
     const groupsId = useId();
     const descriptionId = useId();
-    const remarkId = useId();
     const volumeId = useId();
     const expiryId = useId();
     const resetDaysId = useId();
@@ -174,13 +173,6 @@ export const ClientFields = ({
                     className={FIELD}
                     validation={errors.desc?.message}
                     {...register("desc")}
-                />
-                <FilledTextInput
-                    id={remarkId}
-                    label="Remark"
-                    className={FIELD}
-                    validation={errors.remark?.message}
-                    {...register("remark")}
                 />
             </div>
 

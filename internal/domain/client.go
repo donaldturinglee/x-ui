@@ -30,9 +30,8 @@ type Client struct {
 	TotalUp   int64 `json:"totalUp" form:"totalUp" gorm:"not null;default:0"`
 	TotalDown int64 `json:"totalDown" form:"totalDown" gorm:"not null;default:0"`
 
-	Desc   string `json:"desc" form:"desc" gorm:"column:description"`
-	Group  string `json:"group" form:"group" gorm:"column:group_name;index"`
-	Remark string `json:"remark" form:"remark"`
+	Desc  string `json:"desc" form:"desc" gorm:"column:description"`
+	Group string `json:"group" form:"group" gorm:"column:group_name;index"`
 
 	// CreatedAt and OnlineAt are unix seconds: creation, and the last time the
 	// client had traffic.

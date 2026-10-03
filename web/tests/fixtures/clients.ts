@@ -8,7 +8,6 @@ export const buildClient = (overrides: Partial<Client> = {}): Client => ({
     name: "alice",
     desc: "",
     group: "",
-    remark: "",
     volume: 0,
     expiry: 0,
     up: 0,

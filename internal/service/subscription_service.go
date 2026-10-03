@@ -118,11 +118,6 @@ func (s *SubscriptionService) metaFor(ctx context.Context, client *domain.Client
 		return nil, err
 	}
 
-	title := client.Remark
-	if title == "" {
-		title = client.Name
-	}
-
 	return &Subscription{
 		// The header reports the current period, which is what the subscriber
 		// is being held to. Lifetime totals would show a figure that never
@@ -130,7 +125,7 @@ func (s *SubscriptionService) metaFor(ctx context.Context, client *domain.Client
 		UserInfo: fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d",
 			client.Up, client.Down, client.Volume, client.Expiry),
 		UpdateInterval: updateInterval,
-		Title:          title,
+		Title:          client.Name,
 	}, nil
 }
 
@@ -227,7 +222,7 @@ func (s *SubscriptionService) nodes(ctx context.Context, client *domain.Client, 
 	// Tags must be unique within a client configuration: both sing-box and
 	// Clash reject duplicates, and an inbound published at two addresses would
 	// otherwise produce two nodes with the same name.
-	taken := map[string]bool{}
+	taken := nodeNames()
 
 	var nodes []clientNode
 	for i := range inbounds {
@@ -241,7 +236,7 @@ func (s *SubscriptionService) nodes(ctx context.Context, client *domain.Client, 
 			logger.Warning("subscription: skipping inbound ", inbound.Tag, ": ", err)
 			continue
 		}
-		addrs, err := inboundAddresses(inbound, host, client.Remark, options, outboundTLS)
+		addrs, err := inboundAddresses(inbound, host, client.Name, options, outboundTLS)
 		if err != nil {
 			logger.Warning("subscription: skipping inbound ", inbound.Tag, ": ", err)
 			continue
@@ -285,8 +280,14 @@ func identityKeyFor(inboundType string, options map[string]interface{}) string {
 	return inboundType
 }
 
-// uniqueTag keeps a name as the operator wrote it, falling back to a numbered
-// suffix only when that name is already taken.
+// nodeNames reserves the selectors and built-in destinations in the generated
+// configurations. A subscriber may use any of these words as their own name.
+func nodeNames() map[string]bool {
+	return map[string]bool{groupProxy: true, groupAuto: true, "direct": true, "DIRECT": true, "REJECT": true}
+}
+
+// uniqueTag keeps the subscriber's name, adding a numbered suffix when another
+// node or a configuration destination already uses it.
 func uniqueTag(tag string, taken map[string]bool) string {
 	if tag == "" {
 		tag = "node"

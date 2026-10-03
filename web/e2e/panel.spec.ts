@@ -131,6 +131,23 @@ test.describe("the panel", () => {
         await expect(page.getByText("https://sub.example.com/sub/alice")).toBeVisible();
     });
 
+    test("edits a subscriber without a separate display alias", async ({ page }) => {
+        const state: ApiState = { signedIn: true, maintenance: false };
+        await mockApi(page, state);
+        await page.goto("/clients");
+        await page.getByLabel("Edit alice", { exact: true }).click();
+
+        const dialog = page.getByRole("dialog");
+        await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("alice");
+        await expect(dialog.getByLabel("Remark", { exact: true })).toHaveCount(0);
+        await dialog.getByLabel("Description", { exact: true }).fill("Updated subscriber");
+        await dialog.getByRole("button", { name: "Save", exact: true }).click();
+
+        await expect(dialog).toBeHidden();
+        expect(state.clients?.[0]).toMatchObject({ name: "alice", desc: "Updated subscriber" });
+        expect(state.clients?.[0]).not.toHaveProperty("remark");
+    });
+
     test("lists the listeners a node serves", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
@@ -1229,9 +1246,7 @@ test.describe("the panel", () => {
         // who has been saved has.
         await expect(dialog.getByRole("tab")).toHaveText(["Basics", "Config", "Links"]);
         await dialog.getByRole("tab", { name: "Links" }).click();
-        await expect(
-            dialog.getByText("vless://uuid@edge.example.com:443#alice-edge"),
-        ).toBeVisible();
+        await expect(dialog.getByText("vless://uuid@edge.example.com:443#alice")).toBeVisible();
     });
 
     test("brings a refused field back into view from another tab", async ({ page }) => {

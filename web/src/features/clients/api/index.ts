@@ -12,7 +12,6 @@ export interface Client {
     name: string;
     desc: string;
     group: string;
-    remark: string;
     // A quota in bytes; 0 is unlimited.
     volume: number;
     // A unix time; 0 never expires.
@@ -210,7 +209,6 @@ export const clientRequest = z
         enable: z.boolean(),
         desc: z.string().max(500, "Use 500 characters or fewer."),
         group: z.string().max(64, "Use 64 characters or fewer."),
-        remark: z.string().max(500, "Use 500 characters or fewer."),
         // Typed in gigabytes and billed in bytes, so what is checked is the
         // figure that was typed and the unit is put back on it on the way out.
         volume: z
@@ -291,7 +289,6 @@ export const fromClient = (client: Client): ClientRequest => ({
     enable: client.enable,
     desc: client.desc,
     group: client.group,
-    remark: client.remark,
     volume: fromVolume(client.volume),
     expiry: fromExpiry(client.expiry),
     delayStart: client.delayStart,

@@ -189,7 +189,6 @@ export const client = {
     name: "alice",
     desc: "",
     group: "staff",
-    remark: "",
     volume: 10 * 1024 ** 3,
     expiry: 0,
     up: 1024 ** 3,
@@ -750,7 +749,7 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         }
 
         if (path === "/clients/1/links") {
-            await route.fulfill(envelope(["vless://uuid@edge.example.com:443#alice-edge"]));
+            await route.fulfill(envelope(["vless://uuid@edge.example.com:443#alice"]));
             return;
         }
 
