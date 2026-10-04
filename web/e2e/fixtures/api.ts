@@ -350,6 +350,14 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         const path = url.pathname.slice(`${basePath}api`.length);
         const method = request.method();
 
+        if (path === "/signin/config" && method === "GET") {
+            await route.fulfill({
+                ...envelope({ showTwoFactor: state.twoFactor ?? false }),
+                headers: { "Cache-Control": "no-store" },
+            });
+            return;
+        }
+
         if (path === "/signin" && method === "POST") {
             const body = request.postDataJSON() as {
                 username?: string;
@@ -669,7 +677,12 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         }
 
         if (path === "/subscription-uri") {
-            await route.fulfill(envelope({ uri: "https://sub.example.com/sub/", enabled: true }));
+            await route.fulfill(
+                envelope({
+                    uri: state.subscriptionSettings!.runningUri,
+                    enabled: state.subscriptionSettings!.running.enabled,
+                }),
+            );
             return;
         }
 

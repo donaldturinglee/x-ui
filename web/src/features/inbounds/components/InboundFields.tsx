@@ -18,6 +18,7 @@ import {
     listensOn,
     optionsDocument,
     parseOptions,
+    supportsSharing,
     withoutListenOptions,
     type InboundRequest,
 } from "../api";
@@ -65,6 +66,7 @@ export const InboundFields = ({
     const tagId = useId();
     const listenId = useId();
     const listenPortId = useId();
+    const shareAddressId = useId();
 
     const [type, tag, document] = useWatch({ control, name: ["type", "tag", "options"] });
     const options = parseOptions(document) ?? {};
@@ -202,6 +204,18 @@ export const InboundFields = ({
                                             />
                                         )}
                                     />
+                                    {supportsSharing(type) && (
+                                        <FilledTextInput
+                                            id={shareAddressId}
+                                            label="Share address"
+                                            className={FIELD}
+                                            autoComplete="off"
+                                            autoCapitalize="none"
+                                            spellCheck={false}
+                                            validation={errors.share_address?.message}
+                                            {...register("share_address")}
+                                        />
+                                    )}
                                 </div>
                             }
                         />

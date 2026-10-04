@@ -82,6 +82,7 @@ func TestRegisterMountsEveryRouteWithoutConflict(t *testing.T) {
 
 	want := []string{
 		"GET /healthz",
+		"GET /api/signin/config",
 		"POST /api/signin",
 		"POST /api/signout",
 		"GET /api/me",
@@ -216,7 +217,7 @@ func TestSignInIsNotMountedBehindTheTokenPrefix(t *testing.T) {
 	userHandler.Register(engine.Group("/apiv2"))
 
 	for _, route := range engine.Routes() {
-		if route.Path == "/apiv2/signin" || route.Path == "/apiv2/signout" {
+		if strings.HasPrefix(route.Path, "/apiv2/signin") || route.Path == "/apiv2/signout" {
 			t.Errorf("%s is mounted behind the token prefix", route.Path)
 		}
 	}

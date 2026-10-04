@@ -8,36 +8,41 @@ import { FilledTextInput } from "@/components/FilledField";
 import { useAuth } from "@/providers/auth/useAuth";
 import { getRoutePath } from "@/router/routes";
 
-import { isCodeRequired, signinRequest, type SigninRequest } from "../api";
+import { isCodeRequired, signinRequest, signinWithCodeRequest, type SigninRequest } from "../api";
 
-export const SigninForm = () => {
+interface SigninFormProps {
+    showTwoFactor: boolean;
+}
+
+export const SigninForm = ({ showTwoFactor }: SigninFormProps) => {
     const usernameId = useId();
     const passwordId = useId();
     const codeId = useId();
     const navigate = useNavigate();
     const { signin, isSigningIn, signinError } = useAuth();
+
+    // Keep the challenge as a fallback if two-factor authentication was enabled
+    // after this page loaded. Only that transition focuses the code field.
+    const [isCodeAsked, setIsCodeAsked] = useState(false);
+
+    if (!isCodeAsked && isCodeRequired(signinError)) {
+        setIsCodeAsked(true);
+    }
+
+    const needsCode = showTwoFactor || isCodeAsked;
     const {
         register,
         handleSubmit,
         setFocus,
         formState: { errors },
     } = useForm<SigninRequest>({
-        resolver: zodResolver(signinRequest),
+        resolver: zodResolver(needsCode ? signinWithCodeRequest : signinRequest),
         defaultValues: {
             username: "",
             password: "",
             code: "",
         },
     });
-
-    // The API asks for the code only once the password is right, for an account
-    // that takes one. From then on the field stays, since the next answer -- a
-    // wrong code, say -- is about the code rather than the password.
-    const [isCodeAsked, setIsCodeAsked] = useState(false);
-
-    if (!isCodeAsked && isCodeRequired(signinError)) {
-        setIsCodeAsked(true);
-    }
 
     useEffect(() => {
         if (isCodeAsked) {
@@ -48,7 +53,7 @@ export const SigninForm = () => {
     // Signing in sets the session cookie, so the panel is only entered once
     // there is one for its requests to carry.
     const onSubmit = handleSubmit(async (values) => {
-        const signedIn = await signin(values);
+        const signedIn = await signin({ ...values, code: needsCode ? values.code : "" });
 
         if (signedIn) {
             await navigate(getRoutePath("overview"));
@@ -82,10 +87,7 @@ export const SigninForm = () => {
                 {...register("password")}
             />
 
-            {/* The second factor, asked for under the password it follows. The
-                question is not an error, so it is said under the field rather
-                than above the button in red. */}
-            {isCodeAsked && (
+            {needsCode && (
                 <FilledTextInput
                     id={codeId}
                     label="Two-factor code"

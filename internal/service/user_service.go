@@ -38,9 +38,8 @@ func NewUserService(store *repository.Store) *UserService {
 // sign-in form into a way to find out which usernames exist.
 //
 // An account with two-factor authentication on takes a code from its
-// authenticator app as well. It is asked for only once the password is right,
-// so the question tells nobody anything who does not already know the password;
-// a wrong code counts against the address as a wrong password does.
+// authenticator app as well. The code is checked only after the password is
+// right; a wrong code counts against the address as a wrong password does.
 func (s *UserService) SignIn(ctx context.Context, username string, password string, code string, remoteIP string) (*domain.User, error) {
 	if locked, remaining := s.limiter.LockedOut(remoteIP); locked {
 		logger.Warning("sign-in refused, too many failures from ", remoteIP)
@@ -92,6 +91,24 @@ func (s *UserService) noteFailure(remoteIP string) {
 	if s.limiter.NoteFailure(remoteIP) {
 		logger.Warning("sign-in locked out for ", remoteIP, " after ", maxSignInFailures, " failed attempts")
 	}
+}
+
+type SignInConfig struct {
+	ShowTwoFactor bool `json:"showTwoFactor"`
+}
+
+// SignInConfig lets the single-account login page show its complete form before
+// credentials are entered. It reads the initial operator, like the CLI default;
+// SignIn still enforces the submitted account's own authentication requirements.
+func (s *UserService) SignInConfig(ctx context.Context) (SignInConfig, error) {
+	user, err := s.store.Users.First(ctx)
+	if errors.Is(err, domain.ErrNotFound) {
+		return SignInConfig{}, nil
+	}
+	if err != nil {
+		return SignInConfig{}, err
+	}
+	return SignInConfig{ShowTwoFactor: user.HasTwoFactor()}, nil
 }
 
 // TwoFactorSetup mints a secret for the signed-in operator's authenticator app,

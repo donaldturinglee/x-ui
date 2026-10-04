@@ -38,8 +38,19 @@ func NewUserHandler(users *service.UserService, tokens *middleware.TokenAuthenti
 // are still behind the same-origin check: a cross-site page must not be able to
 // sign the operator out, or in as somebody else.
 func (h *UserHandler) RegisterPublic(g *gin.RouterGroup) {
+	g.GET("/signin/config", h.signInConfig)
 	g.POST("/signin", h.signIn)
 	g.POST("/signout", h.signOut)
+}
+
+func (h *UserHandler) signInConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	config, err := h.users.SignInConfig(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	httputil.Data(c, config)
 }
 
 func (h *UserHandler) Register(g *gin.RouterGroup) {

@@ -438,6 +438,7 @@ test.describe("the panel", () => {
         // The tag is already taken, which is the API's to refuse.
         await dialog.getByLabel("Type").selectOption("vless");
         await dialog.getByLabel("Tag").fill("edge");
+        await dialog.getByLabel("Port", { exact: true }).fill("56123");
         await dialog.getByRole("button", { name: "Save" }).click();
 
         await expect(dialog.getByText("already exists", { exact: false })).toBeVisible();
@@ -694,30 +695,26 @@ test.describe("the panel", () => {
         await form.getByRole("button", { name: "Save", exact: true }).click();
 
         await expect.poll(() => state.settings?.subShowInfo).toBe("true");
-        await expect(page.getByLabel("Current subscription URI")).toHaveValue(
-            "https://sub.example.com/sub/",
-        );
+        expect(state.subscriptionSettings?.saved.port).toBe(8443);
+        expect(state.subscriptionSettings?.running.port).toBe(8443);
     });
 
-    test("separates subscription content from editable service settings", async ({ page }) => {
+    test("combines subscription fields with one footer and expandable settings", async ({
+        page,
+    }) => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
         await page.goto("/general/settings?tab=subscription");
 
         const form = page.getByRole("form", { name: "Subscription", exact: true });
-        const service = page.getByRole("form", { name: "Subscription service", exact: true });
+        const service = form;
         const boxOf = async (control: Locator) => (await control.boundingBox())!;
 
-        await expect(service.getByLabel("Current subscription URI")).toHaveValue(
-            "https://sub.example.com/sub/",
-        );
-
-        const uri = await boxOf(service.getByLabel("Current subscription URI"));
+        const enabled = service.getByRole("switch", { name: "Enable subscriptions" });
+        await expect(enabled).toBeChecked();
         const refresh = await boxOf(form.getByLabel("Refresh interval (hours)"));
 
-        expect(uri.width).toBeGreaterThan(refresh.width);
-
-        // ...how it is written for subscribers under them, a switch to a row...
+        // The common options remain together under the subscription address.
         const encode = await boxOf(
             form.getByRole("switch", { name: "Base64-encode the subscription" }),
         );
@@ -726,12 +723,20 @@ test.describe("the panel", () => {
         );
 
         expect(encode.y).toBeGreaterThan(refresh.y + refresh.height);
-        expect(info.y).toBeGreaterThan(encode.y + encode.height);
+        if (page.viewportSize()!.width >= 600) {
+            expect(Math.abs(info.y - encode.y)).toBeLessThan(2);
+        } else {
+            expect(info.y).toBeGreaterThan(encode.y + encode.height);
+        }
 
         const port = service.getByLabel("Port", { exact: true });
 
+        await expect(port).toBeHidden();
+        await service.getByRole("button", { name: "Advanced", exact: true }).click();
         await expect(port).toHaveValue("8443");
         await expect(port).toBeEditable();
+        expect((await boxOf(enabled)).y).toBeLessThan(refresh.y);
+        expect((await boxOf(port)).y).toBeGreaterThan((await boxOf(enabled)).y);
         expect((await boxOf(port)).y).toBeGreaterThan(info.y + info.height);
 
         // ...and the buttons along the foot, Save last. Maintenance is the
@@ -2732,6 +2737,7 @@ test.describe("the panel", () => {
 
         await dialog.getByLabel("Type").selectOption("trojan");
         await dialog.getByLabel("Tag").fill("self-signed");
+        await dialog.getByLabel("Port", { exact: true }).fill("56123");
         await tls.getByLabel("Security").selectOption("tls");
         await tls.getByRole("button", { name: "TLS options" }).click();
         await page.getByRole("menuitemcheckbox", { name: "SNI", exact: true }).click();

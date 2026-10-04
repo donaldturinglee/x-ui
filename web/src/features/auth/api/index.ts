@@ -21,6 +21,26 @@ export interface Operator {
 
 export const ME_KEY = "/me";
 
+export interface SigninConfig {
+    showTwoFactor: boolean;
+}
+
+const SIGNIN_CONFIG_KEY = "/signin/config";
+
+export const useSigninConfig = () =>
+    useSWR<SigninConfig, Error>(
+        SIGNIN_CONFIG_KEY,
+        () => request.get<SigninConfig>(SIGNIN_CONFIG_KEY),
+        {
+            // Read current state on every visit, including after signing out.
+            revalidateOnMount: true,
+            revalidateOnFocus: false,
+            revalidateOnReconnect: false,
+            dedupingInterval: 0,
+            shouldRetryOnError: false,
+        },
+    );
+
 // Where the accounts are listed, which the admins page reads. Named here as
 // well, since turning two-factor authentication on or off changes a card there.
 const USERS_KEY = "/users";
@@ -40,8 +60,8 @@ const codeField = z
 // rather than a second opinion on the credentials: the API is the authority on
 // whether they are right, and what it refuses is read back from it.
 //
-// The code is asked for only once the API has said the account takes one, so
-// until then it is empty, and empty is not checked.
+// A password-only sign-in has no code. The login configuration, or a challenge
+// returned after it changed, selects the required-code schema below.
 export const signinRequest = z.object({
     username: z.string().min(1, "Enter your username."),
     password: z.string().min(1, "Enter your password."),
@@ -52,6 +72,8 @@ export const signinRequest = z.object({
             "Enter the six digits your app shows.",
         ),
 });
+
+export const signinWithCodeRequest = signinRequest.extend({ code: codeField });
 
 export type SigninRequest = z.infer<typeof signinRequest>;
 
@@ -110,7 +132,7 @@ export const useMe = () => {
     });
 };
 
-// The code is sent as the digits alone, and not at all before one was asked for.
+// A code is sent as the digits alone; an empty code is left out.
 export const signin = async ({ code, ...credentials }: SigninRequest) => {
     return request.post<{ username: string }>("/signin", {
         ...credentials,

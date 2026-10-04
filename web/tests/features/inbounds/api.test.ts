@@ -13,6 +13,7 @@ import {
     listensOn,
     optionsDocument,
     parseOptions,
+    supportsSharing,
     toInboundPayload,
     toOptionsDocument,
     udpTimeoutMinutes,
@@ -35,7 +36,8 @@ const buildRequest = (overrides: Partial<InboundRequest> = {}): InboundRequest =
     type: "vless",
     tag: "edge",
     listen: "",
-    listen_port: 0,
+    listen_port: 56123,
+    share_address: "",
     security: "none",
     options: "",
     ...overrides,
@@ -133,7 +135,7 @@ describe("toInboundPayload", () => {
         // A tun or redirect listener binds neither. Writing "" and 0 in would be
         // the panel inventing configuration the core never had, and the next
         // generation would carry it to the node.
-        const payload = toInboundPayload(buildRequest({ type: "tun" }));
+        const payload = toInboundPayload(buildRequest({ type: "tun", listen_port: 0 }));
 
         expect(payload).not.toHaveProperty("listen");
         expect(payload).not.toHaveProperty("listen_port");
@@ -163,6 +165,103 @@ describe("toInboundPayload", () => {
 
         expect(payload.tag).toBe("edge");
         expect(payload.type).toBe("vless");
+    });
+
+    it("publishes a trimmed domain using the entered port without sending the form field", () => {
+        const payload = toInboundPayload(
+            buildRequest({ share_address: "  Node.Example.com  ", listen_port: 56123 }),
+        );
+
+        expect(payload.addrs).toEqual([{ server: "node.example.com", server_port: 56123 }]);
+        expect(payload).not.toHaveProperty("share_address");
+    });
+
+    it("leaves automatic addressing intact when the share address is empty", () => {
+        const payload = toInboundPayload(buildRequest({ share_address: "  " }));
+
+        expect(payload).not.toHaveProperty("addrs");
+        expect(payload.listen_port).toBe(56123);
+    });
+
+    it("keeps a separately published port when an edit only changes the tag", () => {
+        const inbound = buildInbound({
+            listen_port: 56123,
+            addrs: [{ server: "node.example.com", server_port: 8443, remark: "-edge" }],
+        });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), tag: "renamed" }, inbound).addrs,
+        ).toEqual(inbound.addrs);
+    });
+
+    it("updates the first publication without dropping labels, TLS or other addresses", () => {
+        const first = {
+            server: "old.example.com",
+            server_port: 8443,
+            remark: "-edge",
+            tls: { server_name: "sni.example.com", insecure: false },
+            custom: "preserve",
+        };
+        const other = { server: "backup.example.com", server_port: 9443, remark: "-backup" };
+        const inbound = buildInbound({ listen_port: 56123, addrs: [first, other] });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), share_address: "new.example.com" }, inbound)
+                .addrs,
+        ).toEqual([{ ...first, server: "new.example.com", server_port: 56123 }, other]);
+        expect(inbound.addrs).toEqual([first, other]);
+    });
+
+    it("synchronizes the published port when the entered port changes", () => {
+        const inbound = buildInbound({
+            listen_port: 56123,
+            addrs: [{ server: "node.example.com", server_port: 8443 }],
+        });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), listen_port: 23456 }, inbound).addrs,
+        ).toEqual([{ server: "node.example.com", server_port: 23456 }]);
+    });
+
+    it("removes only the edited publication when the share address is cleared", () => {
+        const other = { server: "backup.example.com", server_port: 9443 };
+        const inbound = buildInbound({
+            listen_port: 56123,
+            addrs: [{ server: "node.example.com", server_port: 56123 }, other],
+        });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), share_address: "" }, inbound).addrs,
+        ).toEqual([other]);
+    });
+
+    it("restores automatic addressing after the last publication is removed", () => {
+        const inbound = buildInbound({
+            listen_port: 56123,
+            addrs: [{ server: "node.example.com", server_port: 56123 }],
+        });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), share_address: "" }, inbound).addrs,
+        ).toEqual([]);
+    });
+
+    it("keeps publications on a type without subscriber nodes unchanged", () => {
+        const inbound = buildInbound({
+            type: "direct",
+            listen_port: 56123,
+            addrs: [{ server: "legacy.example.com", server_port: 8443 }],
+        });
+
+        expect(
+            toInboundPayload({ ...fromInbound(inbound), share_address: "" }, inbound).addrs,
+        ).toEqual(inbound.addrs);
+    });
+
+    it("converts international domains to the ASCII hostname clients dial", () => {
+        expect(toInboundPayload(buildRequest({ share_address: "例子.com" })).addrs).toEqual([
+            { server: "xn--fsqu00a.com", server_port: 56123 },
+        ]);
     });
 });
 
@@ -226,6 +325,24 @@ describe("fromInbound", () => {
         // address field would be rendered into an input expecting a string.
         expect(fromInbound(buildInbound({ listen: 42 })).listen).toBe("");
     });
+
+    it("reads the first publication into the share address field", () => {
+        const inbound = buildInbound({
+            addrs: [
+                { server: "first.example.com", server_port: 56123 },
+                { server: "other.example.com", server_port: 8443 },
+            ],
+        });
+
+        expect(fromInbound(inbound).share_address).toBe("first.example.com");
+        expect(JSON.parse(fromInbound(inbound).options).addrs).toEqual(inbound.addrs);
+    });
+
+    it("keeps an absent or unrecognised publication as an empty field", () => {
+        expect(fromInbound(buildInbound()).share_address).toBe("");
+        expect(fromInbound(buildInbound({ addrs: null })).share_address).toBe("");
+        expect(fromInbound(buildInbound({ addrs: ["legacy.example.com"] })).share_address).toBe("");
+    });
 });
 
 describe("cloneInbound", () => {
@@ -287,6 +404,24 @@ describe("cloneInbound", () => {
         // be configuration the core never had.
         expect(cloneInbound(buildInbound({ type: "tun" }), []).listen_port).toBe(0);
     });
+
+    it("publishes the clone's new port while retaining the other address settings", () => {
+        const first = {
+            server: "node.example.com",
+            server_port: 8443,
+            tls: { server_name: "sni.example.com" },
+            remark: "-edge",
+        };
+        const other = { server: "backup.example.com", server_port: 9443 };
+        const inbound = buildInbound({ listen_port: 56123, addrs: [first, other] });
+        const copy = cloneInbound(inbound, [], () => 0.5);
+
+        expect(toInboundPayload(copy).addrs).toEqual([
+            { ...first, server_port: copy.listen_port },
+            other,
+        ]);
+        expect(inbound.addrs).toEqual([first, other]);
+    });
 });
 
 describe("clientsOf", () => {
@@ -324,8 +459,12 @@ describe("inboundRequest", () => {
     });
 
     it("refuses a port that is not one", () => {
-        // Zero is allowed and means the listener binds none.
-        expect(inboundRequest.safeParse(buildRequest({ listen_port: 0 })).success).toBe(true);
+        // A subscriber node needs a real port; a tun listener binds none.
+        expect(inboundRequest.safeParse(buildRequest({ listen_port: 0 })).success).toBe(false);
+        expect(
+            inboundRequest.safeParse(buildRequest({ type: "tun", listen_port: 0 })).success,
+        ).toBe(true);
+        expect(inboundRequest.safeParse(buildRequest({ listen_port: 1 })).success).toBe(true);
         expect(inboundRequest.safeParse(buildRequest({ listen_port: 65535 })).success).toBe(true);
         expect(inboundRequest.safeParse(buildRequest({ listen_port: 65536 })).success).toBe(false);
         expect(inboundRequest.safeParse(buildRequest({ listen_port: -1 })).success).toBe(false);
@@ -380,6 +519,83 @@ describe("inboundRequest", () => {
                 .success,
         ).toBe(true);
     });
+
+    it.each(["", "node.example.com", "node.example.com.", "localhost", "例子.com"])(
+        "accepts the optional share domain %j",
+        (share_address) => {
+            expect(inboundRequest.safeParse(buildRequest({ share_address })).success).toBe(true);
+        },
+    );
+
+    it("trims the share domain before saving", () => {
+        expect(
+            inboundRequest.parse(buildRequest({ share_address: "  node.example.com  " }))
+                .share_address,
+        ).toBe("node.example.com");
+    });
+
+    it.each([
+        "https://node.example.com",
+        "node.example.com:56123",
+        "node.example.com/path",
+        "node.example.com?type=tcp",
+        "node.example.com#name",
+        "user@node.example.com",
+        "45.32.93.251",
+        "[2001:db8::1]",
+        "node example.com",
+        "node..example.com",
+        "-node.example.com",
+        "node-.example.com",
+        "node%2eexample.com",
+        `${"a".repeat(64)}.example.com`,
+    ])("refuses a new share address that is not a domain: %j", (share_address) => {
+        const result = inboundRequest.safeParse(buildRequest({ share_address }));
+
+        expect(result.success).toBe(false);
+        expect(result.error?.issues[0]?.path).toEqual(["share_address"]);
+    });
+
+    it("preserves existing IP publications until the share address is changed", () => {
+        const inbound = buildInbound({
+            listen_port: 56123,
+            addrs: [{ server: "45.32.93.251", server_port: 8443 }],
+        });
+        const values = fromInbound(inbound);
+
+        expect(inboundRequest.safeParse(values).success).toBe(true);
+        expect(toInboundPayload(values, inbound).addrs).toEqual(inbound.addrs);
+        expect(inboundRequest.safeParse({ ...values, share_address: "45.32.93.252" }).success).toBe(
+            false,
+        );
+    });
+});
+
+describe("supportsSharing", () => {
+    it.each([
+        "socks",
+        "http",
+        "mixed",
+        "shadowsocks",
+        "naive",
+        "hysteria",
+        "hysteria2",
+        "anytls",
+        "tuic",
+        "vless",
+        "trojan",
+        "vmess",
+        "snell",
+    ])("offers the share address for %s", (type) => {
+        expect(supportsSharing(type)).toBe(true);
+    });
+
+    it.each(["", "tun", "cloudflared", "direct", "redirect", "tproxy", "shadowtls"])(
+        "does not offer a publication field for %j",
+        (type) => {
+            expect(supportsSharing(type)).toBe(false);
+        },
+    );
 });
 
 describe("listensOn, carriesTls and carriesReality", () => {

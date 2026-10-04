@@ -9,6 +9,7 @@ import { ONLINES_KEY } from "@/features/overview/api";
 import { request } from "@/lib/request";
 
 import { securityOf } from "./tls";
+import { isShareDomain, readShareAddress, withShareAddress } from "./share-address";
 
 export {
     hasListenOption,
@@ -121,7 +122,7 @@ export const inboundDocs = (type: string) => ({
 // meant nothing in the panel could change a port. A listener's TLS stays in the
 // document -- it is one of the core's options -- and its fields are views over
 // it there.
-const NAMED_FIELDS = new Set(["id", "type", "tag", "listen", "listen_port"]);
+const NAMED_FIELDS = new Set(["id", "type", "tag", "listen", "listen_port", "share_address"]);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
@@ -194,6 +195,8 @@ export const inboundRequest = z
             .int("Use a whole number.")
             .min(0, "Use nothing less than zero.")
             .max(MAXIMUM_PORT, `Use ${MAXIMUM_PORT} or less.`),
+        // A view over the first published address, kept out of the core options.
+        share_address: z.string().trim(),
         // How the listener is served. The block that says so is in the options,
         // and is what is sent; this is the choice that wrote it, held beside them
         // so what the core would refuse is said under the field that chose it.
@@ -208,7 +211,7 @@ export const inboundRequest = z
     // so the form refuses it first, as the reference does; and one served over
     // QUIC has no Reality to be served over. A type this panel does not know is
     // left to the core.
-    .superRefine(({ type, security }, context) => {
+    .superRefine(({ type, security, share_address, listen_port, options }, context) => {
         const listener = `${/^[aeiou]/.test(type) ? "An" : "A"} ${type} listener`;
 
         if (TLS_ONLY_TYPES.has(type) && security === "none") {
@@ -226,6 +229,30 @@ export const inboundRequest = z
                 message: `${listener} cannot be served over Reality: choose TLS.`,
             });
         }
+
+        if (supportsSharing(type)) {
+            if (listen_port < 1) {
+                context.addIssue({
+                    code: "custom",
+                    path: ["listen_port"],
+                    message: "Enter a port from 1 to 65535.",
+                });
+            }
+
+            // Preserve an existing IP or older address on an ordinary edit.
+            // A new or changed value must be a domain without a port.
+            if (
+                share_address &&
+                share_address !== readShareAddress(parseOptions(options) ?? {}) &&
+                !isShareDomain(share_address)
+            ) {
+                context.addIssue({
+                    code: "custom",
+                    path: ["share_address"],
+                    message: "Enter a domain only, without a scheme, port or path.",
+                });
+            }
+        }
     });
 
 export type InboundRequest = z.infer<typeof inboundRequest>;
@@ -239,24 +266,41 @@ export type InboundRequest = z.infer<typeof inboundRequest>;
 // next generation would carry to the node.
 //
 // The security is not sent: it is the TLS block in the options that says it.
-export const toInboundPayload = ({
-    options,
-    listen,
-    listen_port,
-    security: _security,
-    ...named
-}: InboundRequest) => ({
-    ...(parseOptions(options) ?? {}),
-    ...named,
-    ...(listen ? { listen } : {}),
-    ...(listen_port ? { listen_port } : {}),
-});
+// Edits carry their original port so an unrelated save preserves a separately
+// published port. New listeners and copies publish the port they are given.
+export const toInboundPayload = (
+    { options, listen, listen_port, share_address, security: _security, ...named }: InboundRequest,
+    original?: Inbound,
+): Record<string, unknown> & {
+    type: string;
+    tag: string;
+    listen?: string;
+    listen_port?: number;
+} => {
+    const document = parseOptions(options) ?? {};
+    const published = supportsSharing(named.type)
+        ? withShareAddress(
+              document,
+              share_address.trim(),
+              listen_port,
+              !original || listen_port !== (listenPort(original) ?? 0),
+          )
+        : document;
+
+    return {
+        ...published,
+        ...named,
+        ...(listen ? { listen } : {}),
+        ...(listen_port ? { listen_port } : {}),
+    };
+};
 
 export const fromInbound = (inbound: Inbound): InboundRequest => ({
     type: inbound.type,
     tag: inbound.tag,
     listen: typeof inbound.listen === "string" ? inbound.listen : "",
     listen_port: listenPort(inbound) ?? 0,
+    share_address: readShareAddress(inbound),
     security: securityOf(inbound),
     options: toOptionsDocument(inbound),
 });
@@ -350,8 +394,15 @@ export const useCreateInbound = () => {
     );
 };
 
-export const updateInbound = async (inboundId: number, payload: InboundRequest) => {
-    return request.post<Inbound>(`${INBOUNDS_KEY}/${inboundId}`, toInboundPayload(payload));
+export const updateInbound = async (
+    inboundId: number,
+    payload: InboundRequest,
+    original: Inbound,
+) => {
+    return request.post<Inbound>(
+        `${INBOUNDS_KEY}/${inboundId}`,
+        toInboundPayload(payload, original),
+    );
 };
 
 export const useUpdateInbound = () => {
@@ -359,8 +410,10 @@ export const useUpdateInbound = () => {
 
     return useSWRMutation(
         INBOUNDS_KEY,
-        (_key: string, { arg }: { arg: { id: number; changes: InboundRequest } }) =>
-            updateInbound(arg.id, arg.changes),
+        (
+            _key: string,
+            { arg }: { arg: { id: number; changes: InboundRequest; original: Inbound } },
+        ) => updateInbound(arg.id, arg.changes, arg.original),
         {
             throwOnError: false,
             onSuccess: () =>
@@ -429,6 +482,9 @@ const TYPES_WITH_LINK = new Set([
 ]);
 
 export const hasLink = (inbound: Inbound) => TYPES_WITH_LINK.has(inbound.type);
+
+// Snell is published through subscriptions even though it has no sharing URI.
+export const supportsSharing = (type: string) => TYPES_WITH_LINK.has(type) || type === "snell";
 
 // The most subscribers the API hands over in one read. Every subscriber is wanted
 // here rather than a page of them, so this is what is asked for.

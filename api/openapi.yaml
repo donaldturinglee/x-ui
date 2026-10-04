@@ -147,6 +147,46 @@ paths:
         "404":
           description: No such subscription, or it is disabled.
 
+  /api/signin/config:
+    get:
+      tags: [auth]
+      summary: Read the initial sign-in form configuration
+      description: |
+        Public configuration for a single-operator panel. `showTwoFactor` is
+        derived from the initial (oldest) operator's two-factor state. No
+        username, password hash or authenticator secret is returned, and no
+        username is supplied to this endpoint. With no operator it is false.
+
+        The panel loads this before displaying the form, showing a required
+        code field only when it is true. A failed read offers a retry instead
+        of rendering a password-only form. The response is not cached; sign-in
+        still checks the submitted account's current authentication requirements.
+      security: []
+      responses:
+        "200":
+          description: The sign-in form configuration
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        type: object
+                        required: [showTwoFactor]
+                        properties:
+                          showTwoFactor: { type: boolean }
+        "500":
+          description: The configuration could not be read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
   /api/signin:
     post:
       tags: [auth]
@@ -158,11 +198,13 @@ paths:
         exist. Repeated failures from one address are locked out for a while.
 
         An account with two-factor authentication on also needs the code its
-        authenticator app shows. The code is asked for only once the password
-        is right: sent without one, such a sign-in is answered 401 with
-        `obj.twoFactor` set, and a client asks for the code and sends all three
-        again. A wrong code counts towards the lockout as a wrong password
-        does, and a code that has been accepted once is not accepted again.
+        authenticator app shows. The panel uses `/api/signin/config` to show
+        the code field before credentials are entered and sends all three
+        together. The API checks the code only after the password is right:
+        sent without one, such a sign-in is answered 401 with `obj.twoFactor`
+        set. This remains a fallback when two-factor state changed after the
+        page loaded. A wrong code counts towards the lockout as a wrong
+        password does, and an accepted code is not accepted again.
       security: []
       requestBody:
         required: true
@@ -178,7 +220,8 @@ paths:
                   type: string
                   description: |
                     The six digits the authenticator app shows, spaces ignored.
-                    Left out until the account asks for one.
+                    Required for an account with two-factor authentication on;
+                    left out for password-only sign-in.
       responses:
         "200":
           description: Signed in; the session cookie is set
@@ -2342,7 +2385,23 @@ components:
           maxLength: 64
           description: Unique, without whitespace. Traffic is reported against it. A tag reserved by another listener cannot be reused, even after that listener is deleted.
         tls: { type: object, additionalProperties: true, description: "The core's inbound TLS block. Absent means no TLS." }
-        addrs: { type: array, items: { type: string } }
+        addrs:
+          type: array
+          description: |
+            Published client connection addresses, shared by client links and
+            subscriptions. With no entries, the request hostname and listen_port
+            are used. The panel's optional Share address field edits the first
+            entry's server and uses the entered Port for server_port when either
+            field changes. Other entries and per-address TLS overrides are preserved.
+          items:
+            type: object
+            additionalProperties: true
+            required: [server, server_port]
+            properties:
+              server: { type: string, example: node.example.com }
+              server_port: { type: integer, minimum: 1, maximum: 65535, example: 56123 }
+              remark: { type: string, description: Optional suffix appended to the client name. }
+              tls: { type: object, additionalProperties: true, description: Per-address client TLS overrides. }
         out_json:
           type: object
           additionalProperties: true

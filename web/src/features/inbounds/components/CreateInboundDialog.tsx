@@ -34,6 +34,7 @@ export const CreateInboundDialog = ({ onClose, returnFocusRef }: CreateInboundDi
             tag: "",
             listen: "::",
             listen_port: 0,
+            share_address: "",
             security: "none",
             options: "",
         },

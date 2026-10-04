@@ -47,7 +47,7 @@ export const EditInboundDialog = ({ inbound, onClose, returnFocusRef }: EditInbo
     const type = useWatch({ control, name: "type" });
 
     const onSubmit = handleSubmit(async (values) => {
-        const updated = await trigger({ id: inbound.id, changes: values });
+        const updated = await trigger({ id: inbound.id, changes: values, original: inbound });
 
         if (updated) {
             onClose();

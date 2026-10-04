@@ -431,9 +431,9 @@ phone -- the row scrolls rather than squeezing their names together, and the
 open one is brought into view. Each tab acts on its own, so each has its buttons
 along the foot of the card under a line, Save last, where a dialog keeps it,
 rather than the page having one Save above every tab, as the reference's has:
-the subscription's options and the bot's are saved and put back apart -- a
-tab's Restore defaults names its own keys to `/settings/reset`, so putting the
-subscription back does not forget the bot's token -- NTP, HTTP clients, the
+the subscription's options and the bot's are saved independently. The bot's
+Restore defaults names its own keys to `/settings/reset`; subscription defaults
+are staged in its own form, without changing the bot's token. NTP, HTTP clients, the
 experimental interfaces and the log are each saved into the base document.
 Sing Box is read-only; two-factor authentication belongs to the
 signed-in operator.
@@ -457,20 +457,27 @@ signed-in operator.
   keep the router and API aligned with an edited Web path. It says so when
   no session secret is configured, since every session then ends with the
   process.
-- **Subscription** has two independent forms. Subscription content saves the
-  refresh interval, Base64 encoding and quota/expiry display to the database;
-  those options take effect immediately and Restore defaults changes only
-  those keys. Subscription service edits enablement, address, port, path,
+- **Subscription** is one compact form with one Save and one footer. Public URL
+  spans the full width; Path and refresh interval share a row, followed by the
+  Base64 and quota/expiry switches. Address, port, domain, SSL paths and trusted
+  proxies are under Advanced, collapsed until opened or validation requires
+  them. Save writes only changed settings, preserving unsaved input on failure.
+  Listener changes are submitted first with their captured revision; if the
+  subsequent database write fails, its draft remains and retry does not resend
+  the successful listener update. Refresh, encoding and quota/expiry settings
+  take effect immediately. Restore defaults stages all subscription defaults,
+  keeps environment-controlled values and requires Save before applying them.
+  The listener edits enablement, address, port, path,
   domain, certificate/key paths, public URL and trusted proxies through
   `/settings/subscription`. It uses the same lock and revision as Panel,
   preserves unrelated YAML, and locks fields supplied by the environment.
-  Current and candidate subscription URIs are displayed separately; the
-  public URL can include a reverse proxy prefix, to which the subscription
+  The public URL can include a reverse proxy prefix, to which the subscription
   path is appended. Service changes require Save followed by Restart & Apply.
-  Its confirmation lists pending changes from both pages, and reconnection
-  links preserve the Subscription tab if the Panel address changes. The
-  reference's JSON and Clash extension tabs are left out: this panel renders
-  those formats without any.
+  Its confirmation lists pending changes from both pages and the saved
+  subscription URI. Subscribers' complete links are shown in their connection
+  dialogs. Reconnection links preserve the Subscription tab if the Panel
+  address changes. The reference's JSON and Clash extension tabs are left out:
+  this panel renders those formats without any.
 - **Two-factor authentication** is the signed-in operator's own, as their
   credentials are; another operator's is theirs to turn on. Turning it on is
   three steps in one place -- a QR code of the secret (or the secret itself, in
@@ -772,6 +779,19 @@ would put configuration on a node the core never had. The type is chosen from a
 list for a different reason: it is one word the core refuses at startup if it is
 misspelled, and the list is what the form offers rather than what it accepts, so
 a record carrying a newer core's type is still editable.
+
+The optional **Share address** field edits the first published address on every
+type that produces subscriber links or nodes, including snell. It accepts a
+domain without a scheme, port or path. The entered Port is used for that
+publication when its domain or Port is changed; copying a listener also updates
+the first publication to the copy's new port. An ordinary edit preserves an
+existing separately published port, the other addresses, labels and TLS
+overrides. Existing IP publications remain readable and survive ordinary edits.
+Clearing the field removes only the first publication. With no publications
+left, links use the request hostname and entered Port. Client links and
+subscriptions share this address source; the subscription public URL remains
+the address used to fetch the subscription. The field is carried through
+`addrs`, excluded from core options, and needs no database migration.
 
 The dialog itself is the reference's, for adding and editing alike: its title
 with a link to the core's documentation for the chosen type, the type and the
@@ -1080,11 +1100,18 @@ clock drift either way, which is what every app supports). The secret is 20
 random bytes, stored in `users.totp_secret` and never returned by the API — the
 account's `twoFactor` says only whether it is on.
 
-- The code is asked for only after the password is right. Sent without one, the
-  sign-in is refused with `obj.twoFactor` set and the panel asks for it; that is
-  the one answer that differs from the others, and only someone holding the
-  password gets it. A wrong code is counted by the same per-address lockout as a
-  wrong password.
+- The single-operator login page reads public `GET /api/signin/config` before
+  displaying its form. `showTwoFactor` comes from the initial (oldest) account's
+  existing two-factor state: when enabled, the complete form includes a required
+  six-digit code field before any credentials are entered; when disabled, it
+  has only username and password. No username is supplied to the configuration
+  endpoint and its response exposes only this flag, with `Cache-Control:
+  no-store`. A failed read offers a retry instead of assuming it is disabled.
+- The API still checks the actual sign-in account's code only after the password
+  is right. Sent without one, sign-in is refused with `obj.twoFactor` set; the
+  panel asks for it as a fallback if two-factor authentication was enabled
+  after the page loaded. A wrong code is counted by the same per-address
+  lockout as a wrong password.
 - A code is accepted once. The last step each account used is remembered, so a
   code read over a shoulder or out of a proxy's log is refused for the minute it
   would otherwise stay good.

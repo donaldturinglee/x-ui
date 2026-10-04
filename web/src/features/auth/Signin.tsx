@@ -1,14 +1,21 @@
-import { Heading } from "@gamecrafters/base-ui/react";
+import { Button, Heading, InlineMessage, SkeletonText } from "@gamecrafters/base-ui/react";
 import { Navigate } from "react-router";
 
 import { ThemeControl } from "@/components/ThemeControl";
 import { useAuth } from "@/providers/auth/useAuth";
 import { getRoutePath } from "@/router/routes";
 
+import { useSigninConfig } from "./api";
 import { SigninForm } from "./components/SigninForm";
 
 export const Signin = () => {
     const { isAuthenticated } = useAuth();
+    const {
+        data: config,
+        error: configError,
+        isValidating,
+        mutate: reloadConfig,
+    } = useSigninConfig();
 
     // Somebody who already has a session has no business on this page, and
     // landing back on it after signing in would look like the sign-in failed.
@@ -38,7 +45,27 @@ export const Signin = () => {
                         </Heading>
 
                         <div className="px-4 pb-4">
-                            <SigninForm />
+                            {configError ? (
+                                <div className="flex flex-col gap-2">
+                                    <InlineMessage variant="critical">
+                                        Unable to load sign-in settings. Try again.
+                                    </InlineMessage>
+                                    <Button
+                                        variant="primary"
+                                        block
+                                        loading={isValidating}
+                                        onClick={() => void reloadConfig()}
+                                    >
+                                        Retry
+                                    </Button>
+                                </div>
+                            ) : !config || isValidating ? (
+                                <div role="status" aria-label="Loading sign-in settings">
+                                    <SkeletonText lines={6} />
+                                </div>
+                            ) : (
+                                <SigninForm showTwoFactor={config.showTwoFactor} />
+                            )}
 
                             {/* The theme is the browser's rather than the account's, so
                                 it can be chosen before there is anyone signed in. It
