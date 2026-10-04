@@ -11,7 +11,14 @@ import {
     Token,
 } from "@gamecrafters/base-ui/react";
 import { ChevronDownRegular, DismissCircleRegular } from "@gamecrafters/base-ui-icons";
-import { useId, useState, type ComponentProps, type ReactNode } from "react";
+import {
+    useId,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type ComponentProps,
+    type ReactNode,
+} from "react";
 
 import { useMenuInDialog } from "@/lib/menu";
 
@@ -259,6 +266,8 @@ export const FilledListField = ({
     );
 };
 
+const MULTI_SELECT_MAX_HEIGHT = 320;
+
 type FilledMultiSelectProps = FilledProps & {
     // What can be chosen, by the value it is held as and what it is called.
     options: { value: string; label: string }[];
@@ -290,6 +299,46 @@ export const FilledMultiSelect = ({
     const labelId = useId();
     const chosenId = useId();
     const { anchorRef, isOpen, setIsOpen, onKeyDown } = useMenuInDialog();
+    const listRef = useRef<HTMLUListElement>(null);
+    const [maxHeight, setMaxHeight] = useState(MULTI_SELECT_MAX_HEIGHT);
+
+    useLayoutEffect(() => {
+        if (!isOpen) return;
+
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+
+        const updateMaxHeight = () => {
+            const { top, bottom } = anchor.getBoundingClientRect();
+            // The overlay leaves 4px to its anchor and 8px to the window edge.
+            const available = Math.max(top - 12, window.innerHeight - bottom - 12, 0);
+            setMaxHeight(Math.min(MULTI_SELECT_MAX_HEIGHT, Math.floor(available)));
+        };
+
+        updateMaxHeight();
+        const observer = new ResizeObserver(updateMaxHeight);
+        observer.observe(anchor);
+        window.addEventListener("resize", updateMaxHeight);
+        window.addEventListener("scroll", updateMaxHeight, true);
+
+        return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", updateMaxHeight);
+            window.removeEventListener("scroll", updateMaxHeight, true);
+        };
+    }, [anchorRef, isOpen]);
+
+    useLayoutEffect(() => {
+        const list = listRef.current;
+        const focused = document.activeElement;
+        if (!list || !(focused instanceof HTMLElement) || !list.contains(focused)) return;
+
+        // Resizing can shorten the list after the browser has scrolled to its focus.
+        const bounds = list.getBoundingClientRect();
+        const option = focused.getBoundingClientRect();
+        if (option.top < bounds.top) list.scrollTop -= bounds.top - option.top;
+        else if (option.bottom > bounds.bottom) list.scrollTop += option.bottom - bounds.bottom;
+    }, [isOpen, maxHeight]);
 
     const chosen = options.filter((option) => value.includes(option.value));
     const toggle = (option: string) =>
@@ -333,7 +382,12 @@ export const FilledMultiSelect = ({
                     </ActionMenu.Anchor>
 
                     <ActionMenu.Overlay align="start" width="medium">
-                        <ActionList selectionVariant="multiple">
+                        <ActionList
+                            ref={listRef}
+                            selectionVariant="multiple"
+                            className="overflow-y-auto overscroll-y-contain"
+                            style={{ maxHeight }}
+                        >
                             {options.map((option) => (
                                 <ActionList.Item
                                     key={option.value}
