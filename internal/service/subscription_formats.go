@@ -74,11 +74,18 @@ log-level: info
 external-controller: 127.0.0.1:9090
 dns:
   enable: true
+  ipv6: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
   nameserver:
     - https://1.1.1.1/dns-query
     - https://dns.google/dns-query
+  proxy-server-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
   fake-ip-filter:
     - "*.lan"
     - "*.local"
@@ -186,7 +193,7 @@ func renderClashNodes(nodes []clientNode) (string, error) {
 		map[string]interface{}{
 			"name": groupAuto, "type": "url-test",
 			"proxies":  orEmptyStrings(names),
-			"url":      "http://www.gstatic.com/generate_204",
+			"url":      "https://www.gstatic.com/generate_204",
 			"interval": 300,
 		},
 	}
