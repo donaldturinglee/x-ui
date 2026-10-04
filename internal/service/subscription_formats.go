@@ -84,6 +84,7 @@ dns:
     - https://1.1.1.1/dns-query
     - https://dns.google/dns-query
   proxy-server-nameserver:
+    - system
     - 1.1.1.1
     - 8.8.8.8
   fake-ip-filter:
