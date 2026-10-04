@@ -12,6 +12,7 @@ import type {
     SubscriptionSettingsState,
 } from "../../src/features/settings/api/subscription";
 import { subscriptionPublicBase } from "../../src/features/settings/subscriptionUri";
+import type { ClientSubscriptionInfo } from "../../src/features/clients/api";
 
 // The suite answers every API call itself rather than bringing up a Go server
 // and a database, so a run needs nothing but a browser and says exactly what
@@ -66,6 +67,9 @@ export interface ApiState {
     inbounds?: Record<string, unknown>[];
     outbounds?: Record<string, unknown>[];
     clients?: (typeof client)[];
+    clientSubscriptionInfo?: ClientSubscriptionInfo;
+    subscriptionInfoFailure?: boolean;
+    subscriptionUriFailure?: boolean;
     // Set by a test to say something moved elsewhere — the worker disabling a
     // depleted subscriber, another operator writing a listener. The next poll
     // reports it once and the panel asks for everything again.
@@ -677,6 +681,10 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         }
 
         if (path === "/subscription-uri") {
+            if (state.subscriptionUriFailure) {
+                await route.fulfill(refusal(500, "Unable to read the subscription address"));
+                return;
+            }
             await route.fulfill(
                 envelope({
                     uri: state.subscriptionSettings!.runningUri,
@@ -758,6 +766,26 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                 enable: true,
             }));
             await route.fulfill(envelope({ reset: touched.length }));
+            return;
+        }
+
+        if (path === "/clients/1/subscription-info") {
+            if (state.subscriptionInfoFailure) {
+                await route.fulfill(refusal(500, "Unable to read subscription availability"));
+                return;
+            }
+            await route.fulfill(
+                envelope(
+                    state.clientSubscriptionInfo ?? {
+                        enabled: state.clients?.find(({ id }) => id === 1)?.enable ?? true,
+                        formats: {
+                            links: { nodeCount: 1, omittedProtocols: [] },
+                            clash: { nodeCount: 1, omittedProtocols: [] },
+                            json: { nodeCount: 1, omittedProtocols: [] },
+                        },
+                    },
+                ),
+            );
             return;
         }
 

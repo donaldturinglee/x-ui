@@ -117,10 +117,11 @@ func (s *SubscriptionService) renderSingBox(ctx context.Context, client *domain.
 		outbounds = append(outbounds, outbound)
 		tags = append(tags, nodes[i].Tag)
 	}
+	if len(tags) == 0 {
+		return "", domain.Invalidf("no nodes are available in the sing-box subscription")
+	}
 
-	// The selectors go last so they can name every node above them. Even with
-	// no nodes they are emitted: a configuration whose route rules detour to a
-	// tag that does not exist will not load at all.
+	// The selectors go last so they can name every node above them.
 	outbounds = append(outbounds,
 		map[string]interface{}{
 			"type": "selector", "tag": groupProxy,
@@ -153,7 +154,10 @@ func (s *SubscriptionService) renderClash(ctx context.Context, client *domain.Cl
 	if err != nil {
 		return "", err
 	}
+	return renderClashNodes(nodes)
+}
 
+func renderClashNodes(nodes []clientNode) (string, error) {
 	var config map[string]interface{}
 	if err := yaml.Unmarshal([]byte(clashTemplate), &config); err != nil {
 		return "", err
@@ -168,6 +172,9 @@ func (s *SubscriptionService) renderClash(ctx context.Context, client *domain.Cl
 		}
 		proxies = append(proxies, proxy)
 		names = append(names, nodes[i].Tag)
+	}
+	if len(proxies) == 0 {
+		return "", domain.Invalidf("no nodes are available in the Clash/Mihomo subscription")
 	}
 
 	config["proxies"] = proxies
@@ -332,6 +339,11 @@ func singBoxTLS(tls map[string]interface{}) map[string]interface{} {
 // clashProxy renders one node as a Clash proxy, or nil when Clash has no
 // equivalent.
 func clashProxy(node *clientNode) map[string]interface{} {
+	switch transportType(node.Transport) {
+	case "tcp", "ws", "grpc", "http", "httpupgrade":
+	default:
+		return nil
+	}
 	proxy := map[string]interface{}{
 		"name":   node.Tag,
 		"server": node.Server,
@@ -395,14 +407,29 @@ func clashProxy(node *clientNode) map[string]interface{} {
 
 func addClashTransport(proxy map[string]interface{}, node *clientNode) {
 	switch transportType(node.Transport) {
-	case "ws":
+	case "ws", "httpupgrade":
 		proxy["network"] = "ws"
 		opts := map[string]interface{}{}
 		if path := stringOr(node.Transport["path"], ""); path != "" {
 			opts["path"] = path
 		}
 		if headers, ok := node.Transport["headers"].(map[string]interface{}); ok && len(headers) > 0 {
-			opts["headers"] = headers
+			copied := make(map[string]interface{}, len(headers))
+			for key, value := range headers {
+				copied[key] = value
+			}
+			opts["headers"] = copied
+		}
+		if transportType(node.Transport) == "httpupgrade" {
+			opts["v2ray-http-upgrade"] = true
+			if host := stringOr(node.Transport["host"], ""); host != "" {
+				headers, _ := opts["headers"].(map[string]interface{})
+				if headers == nil {
+					headers = make(map[string]interface{})
+				}
+				headers["Host"] = host
+				opts["headers"] = headers
+			}
 		}
 		if len(opts) > 0 {
 			proxy["ws-opts"] = opts
@@ -413,10 +440,50 @@ func addClashTransport(proxy map[string]interface{}, node *clientNode) {
 			proxy["grpc-opts"] = map[string]interface{}{"grpc-service-name": name}
 		}
 	case "http":
-		proxy["network"] = "http"
-	case "httpupgrade":
-		proxy["network"] = "http"
+		opts := map[string]interface{}{}
+		if boolOr(node.TLS["enabled"]) {
+			proxy["network"] = "h2"
+			if path := stringOr(node.Transport["path"], ""); path != "" {
+				opts["path"] = path
+			}
+			if hosts := clashStringList(node.Transport["host"]); len(hosts) > 0 {
+				opts["host"] = hosts
+			}
+			proxy["h2-opts"] = opts
+		} else {
+			proxy["network"] = "http"
+			if path := stringOr(node.Transport["path"], ""); path != "" {
+				opts["path"] = []string{path}
+			}
+			if method := stringOr(node.Transport["method"], ""); method != "" {
+				opts["method"] = method
+			}
+			headers := make(map[string]interface{})
+			if values, ok := node.Transport["headers"].(map[string]interface{}); ok {
+				for key, value := range values {
+					headers[key] = clashStringList(value)
+				}
+			}
+			if hosts := clashStringList(node.Transport["host"]); len(hosts) > 0 {
+				headers["Host"] = hosts
+			}
+			if len(headers) > 0 {
+				opts["headers"] = headers
+			}
+			proxy["http-opts"] = opts
+		}
 	}
+}
+
+// sing-box accepts a single string anywhere its transport schema allows a list.
+func clashStringList(value interface{}) []string {
+	if text, ok := value.(string); ok {
+		return []string{text}
+	}
+	if list, ok := value.([]string); ok {
+		return list
+	}
+	return stringList(value)
 }
 
 func addClashTLS(proxy map[string]interface{}, node *clientNode) {

@@ -90,4 +90,19 @@ describe("subscriptionURL", () => {
             "https://sub.example.com/sub/a%20b",
         );
     });
+
+    it("selects a client format after encoding the subscriber's path", () => {
+        expect(subscriptionURL("https://sub.example.com/proxy/sub/", "a b", "clash")).toBe(
+            "https://sub.example.com/proxy/sub/a%20b?format=clash",
+        );
+        expect(subscriptionURL("https://sub.example.com/sub", "alice", "json")).toBe(
+            "https://sub.example.com/sub/alice?format=json",
+        );
+    });
+
+    it("preserves an IPv6 authority and removes extra trailing slashes", () => {
+        expect(subscriptionURL("https://[2001:db8::1]:8443/proxy/sub///", "alice", "clash")).toBe(
+            "https://[2001:db8::1]:8443/proxy/sub/alice?format=clash",
+        );
+    });
 });

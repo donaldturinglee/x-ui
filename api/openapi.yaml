@@ -657,6 +657,33 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/clients/{id}/subscription-info:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [clients]
+      summary: Subscription format availability for this subscriber
+      description: |
+        Authenticated panel metadata, including for disabled subscribers.
+        Reports the usable node count and omitted protocols for links, Clash/Mihomo,
+        and sing-box, using the same exporters as the subscription. Contains no
+        node credentials. The panel uses it to explain omissions and empty formats
+        before displaying a subscription link or QR code.
+      responses:
+        "200":
+          description: The subscriber's format availability
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj:
+                        { $ref: "#/components/schemas/ClientSubscriptionInfo" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/clients/{id}/reset-traffic:
     parameters:
       - $ref: "#/components/parameters/Id"
@@ -2343,6 +2370,27 @@ components:
         delayStart: { type: boolean, description: Hold the clock until the first byte. }
         autoReset: { type: boolean }
         resetDays: { type: integer, minimum: 0, maximum: 365 }
+
+    SubscriptionFormatInfo:
+      type: object
+      required: [nodeCount, omittedProtocols]
+      properties:
+        nodeCount: { type: integer, minimum: 0 }
+        omittedProtocols:
+          type: array
+          items: { type: string }
+    ClientSubscriptionInfo:
+      type: object
+      required: [enabled, formats]
+      properties:
+        enabled: { type: boolean }
+        formats:
+          type: object
+          required: [links, clash, json]
+          properties:
+            links: { $ref: "#/components/schemas/SubscriptionFormatInfo" }
+            clash: { $ref: "#/components/schemas/SubscriptionFormatInfo" }
+            json: { $ref: "#/components/schemas/SubscriptionFormatInfo" }
 
     Client:
       allOf:

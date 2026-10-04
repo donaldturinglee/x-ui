@@ -4,7 +4,6 @@ import {
     EmptyState,
     Heading,
     InlineMessage,
-    QRCode,
     SkeletonText,
     Stack,
     Text,
@@ -12,7 +11,9 @@ import {
 import { LinkDismissRegular } from "@gamecrafters/base-ui-icons";
 import type { RefObject } from "react";
 
-import { subscriptionURL, useClientLinks, useSubscriptionBase, type Client } from "../api";
+import { useClientLinks, type Client } from "../api";
+
+import { ClientSubscriptionPanel } from "./ClientSubscriptionPanel";
 
 interface ClientLinksDialogProps {
     client: Client;
@@ -25,7 +26,6 @@ interface ClientLinksDialogProps {
 // change to a listener shows up here without anything being regenerated.
 export const ClientLinksDialog = ({ client, onClose, returnFocusRef }: ClientLinksDialogProps) => {
     const { data: links, error, isLoading } = useClientLinks(client.id);
-    const { data: subscription } = useSubscriptionBase();
 
     return (
         <Dialog
@@ -37,50 +37,7 @@ export const ClientLinksDialog = ({ client, onClose, returnFocusRef }: ClientLin
             footerButtons={[{ content: "Close", onClick: onClose }]}
         >
             <Stack gap="normal">
-                {/* The one link worth handing over. A client application given
-                    this fetches the list below for itself and keeps it current;
-                    the individual links are for pasting one node somewhere by
-                    hand. */}
-                {subscription && (
-                    <Stack gap="condensed">
-                        <Heading as="h3" size="small">
-                            Subscription
-                        </Heading>
-
-                        <Stack direction="horizontal" align="center" gap="normal" wrap="wrap">
-                            {/* Scanned rather than copied: a subscriber is
-                                usually holding the phone the subscription is
-                                for, and reading a URL of this length off a
-                                screen is how a character goes missing. */}
-                            <QRCode
-                                value={subscriptionURL(subscription.uri, client.name)}
-                                size={128}
-                                aria-label={`Subscription link for ${client.name}`}
-                            />
-
-                            <Stack.Item grow className="min-w-0">
-                                <Stack direction="horizontal" align="center" gap="condensed">
-                                    <Stack.Item grow className="min-w-0">
-                                        <Text className="block truncate font-mono text-xs">
-                                            {subscriptionURL(subscription.uri, client.name)}
-                                        </Text>
-                                    </Stack.Item>
-
-                                    <Clipboard
-                                        value={subscriptionURL(subscription.uri, client.name)}
-                                        aria-label="Copy subscription link"
-                                    />
-                                </Stack>
-                            </Stack.Item>
-                        </Stack>
-
-                        {!subscription.enabled && (
-                            <InlineMessage variant="warning">
-                                Subscriptions are switched off, so nothing answers on this address.
-                            </InlineMessage>
-                        )}
-                    </Stack>
-                )}
+                <ClientSubscriptionPanel client={client} />
 
                 <Heading as="h3" size="small">
                     Individual nodes
@@ -109,7 +66,9 @@ export const ClientLinksDialog = ({ client, onClose, returnFocusRef }: ClientLin
                                         </Text>
                                     </Stack.Item>
 
-                                    <Clipboard value={link} aria-label="Copy link" />
+                                    <Clipboard value={link}>
+                                        <Clipboard.Trigger label="Copy link" size="small" />
+                                    </Clipboard>
                                 </Stack>
                             ))}
                         </Stack>

@@ -2,8 +2,15 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/donaldturinglee/x-ui/internal/domain"
 
 	"gopkg.in/yaml.v3"
 )
@@ -237,6 +244,109 @@ func TestClashRealityOptions(t *testing.T) {
 	// Clash spells these with dashes, not underscores.
 	if opts["public-key"] != "PUBKEY" || opts["short-id"] != "abcd" {
 		t.Errorf("reality-opts = %v, want the public key and short id", opts)
+	}
+}
+
+func TestClashHTTPUpgradePreservesPathHostAndHeaders(t *testing.T) {
+	node := vlessNode()
+	headers := map[string]interface{}{"Host": "old.example", "X-Test": "value"}
+	node.Transport = map[string]interface{}{"type": "httpupgrade", "host": "upgrade.example", "path": "/upgrade", "headers": headers}
+	proxy := clashProxy(node)
+	opts, ok := proxy["ws-opts"].(map[string]interface{})
+	if !ok || proxy["network"] != "ws" || opts["v2ray-http-upgrade"] != true || opts["path"] != "/upgrade" {
+		t.Fatalf("HTTPUpgrade = %v, want WebSocket options with upgrade enabled", proxy)
+	}
+	got := opts["headers"].(map[string]interface{})
+	if got["Host"] != "upgrade.example" || got["X-Test"] != "value" || headers["Host"] != "old.example" {
+		t.Fatalf("headers = %v, source = %v", got, headers)
+	}
+}
+
+func TestClashHTTPTransportUsesTheListenerTLSAndRequestOptions(t *testing.T) {
+	node := vlessNode()
+	node.Transport = map[string]interface{}{
+		"type": "http", "host": "http.example", "path": "/http", "method": "GET",
+		"headers": map[string]interface{}{"X-Test": "value"},
+	}
+	node.TLS = nil
+	proxy := clashProxy(node)
+	opts := proxy["http-opts"].(map[string]interface{})
+	if proxy["network"] != "http" || opts["method"] != "GET" || !reflect.DeepEqual(opts["path"], []string{"/http"}) {
+		t.Fatalf("plain HTTP = %v", proxy)
+	}
+	headers := opts["headers"].(map[string]interface{})
+	if !reflect.DeepEqual(headers["Host"], []string{"http.example"}) || !reflect.DeepEqual(headers["X-Test"], []string{"value"}) {
+		t.Fatalf("HTTP headers = %v", headers)
+	}
+	node.TLS = map[string]interface{}{"enabled": true}
+	proxy = clashProxy(node)
+	opts = proxy["h2-opts"].(map[string]interface{})
+	if proxy["network"] != "h2" || opts["path"] != "/http" || !reflect.DeepEqual(opts["host"], []string{"http.example"}) {
+		t.Fatalf("HTTP over TLS = %v", proxy)
+	}
+}
+
+func TestClashSkipsUnrepresentableTransportsAndRefusesEmptyConfigurations(t *testing.T) {
+	node := vlessNode()
+	node.Transport = map[string]interface{}{"type": "quic"}
+	if proxy := clashProxy(node); proxy != nil {
+		t.Fatalf("unsupported transport = %v", proxy)
+	}
+	for _, nodes := range [][]clientNode{nil, {*node}, {{Type: "naive"}, {Type: "snell"}, {Type: "hysteria"}}} {
+		body, err := renderClashNodes(nodes)
+		if body != "" || !errors.Is(err, domain.ErrInvalid) {
+			t.Fatalf("empty subscription = %q, %v", body, err)
+		}
+	}
+}
+
+func TestClashRenderedConfiguration(t *testing.T) {
+	var nodes []clientNode
+	for _, transport := range []string{"tcp", "ws", "grpc", "httpupgrade", "http"} {
+		node := vlessNode()
+		node.Tag = transport
+		node.Transport = map[string]interface{}{"type": transport, "path": "/proxy", "host": "edge.example.com", "service_name": "service"}
+		node.Identity = map[string]interface{}{"uuid": "11111111-2222-3333-4444-555555555555"}
+		nodes = append(nodes, *node)
+	}
+	body, err := renderClashNodes(nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered struct {
+		Proxies []struct{ Name string }
+		Groups  []struct {
+			Name    string
+			Proxies []string
+		} `yaml:"proxy-groups"`
+		Rules []string
+	}
+	if err := yaml.Unmarshal([]byte(body), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Proxies) != len(nodes) || len(rendered.Groups) != 2 || rendered.Groups[0].Name != groupProxy || rendered.Groups[1].Name != groupAuto || rendered.Rules[len(rendered.Rules)-1] != "MATCH,Proxy" {
+		t.Fatalf("invalid rendered configuration: %+v", rendered)
+	}
+	// An installed Mihomo can validate the exact document, without starting a
+	// listener or contacting any of the example proxy servers.
+	if binary := os.Getenv("X_UI_TEST_MIHOMO"); binary != "" {
+		directory := t.TempDir()
+		if dataDir := os.Getenv("X_UI_TEST_MIHOMO_DATA_DIR"); dataDir != "" {
+			for _, name := range []string{"geoip.metadb", "Country.mmdb", "geoip.dat", "geosite.dat"} {
+				if data, err := os.ReadFile(filepath.Join(dataDir, name)); err == nil {
+					if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
+		path := filepath.Join(directory, "subscription.yaml")
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "-t", "-d", directory, "-f", path).CombinedOutput(); err != nil {
+			t.Fatalf("Mihomo rejected the subscription: %v\n%s", err, output)
+		}
 	}
 }
 

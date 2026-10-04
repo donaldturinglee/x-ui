@@ -203,10 +203,13 @@ export const SubscriptionTab = () => {
                             className="my-2 text-[12px] leading-5 text-[var(--foreground-color-muted)]"
                         >
                             Public URL is the external HTTP or HTTPS base address, including any
-                            reverse proxy prefix. Path is appended to it. Local HTTPS needs both SSL
-                            certificate and key paths. Separate trusted proxy IP addresses or CIDR
-                            ranges with commas. Refresh and encoding options take effect when saved;
-                            address and SSL changes require Restart &amp; Apply.
+                            reverse proxy prefix. Path is appended to it, so do not repeat Path in
+                            Public URL. For example, use https://sub.example.com with Path /sub/.
+                            When subscriptions and nodes use different domains, set each listener's
+                            Share address to the node's reachable address. Local HTTPS needs both
+                            SSL certificate and key paths. Separate trusted proxy IP addresses or
+                            CIDR ranges with commas. Refresh and encoding options take effect when
+                            saved; address and SSL changes require Restart &amp; Apply.
                         </Text>
                     </div>
                     <div

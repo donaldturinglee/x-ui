@@ -988,6 +988,21 @@ the others:
 | `json` | A sing-box client configuration |
 | `clash` | Clash/Mihomo YAML |
 
+The connection dialog offers Universal, Clash/Mihomo and sing-box formats.
+One complete address is used for the displayed text, clipboard and QR code;
+Clash/Mihomo appends `?format=clash`, sing-box appends `?format=json`. The QR
+code is 200 pixels with a four-module quiet zone and can be enlarged to 320
+pixels. `/clients/:id/subscription-info`, on the authenticated panel API,
+reports the usable node count and omitted protocols for each format using the
+exporters themselves. Empty formats show an explanation instead of an import
+link; public requests for an empty subscription receive the same empty 404
+as other subscription failures, so no empty selector configuration is emitted.
+
+Clash HTTPUpgrade uses `network: ws` with `ws-opts.v2ray-http-upgrade`,
+preserving its path, Host and headers. HTTP transports preserve their request
+options and use H2 when the listener enables TLS. Unrepresentable transports
+are omitted and reported in the format availability.
+
 All three are built from one enumeration of the subscriber's nodes, not three.
 Rendering each format independently is how a node ends up in one subscription
 and quietly missing from another. A format that cannot express a protocol leaves

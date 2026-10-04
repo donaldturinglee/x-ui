@@ -320,8 +320,31 @@ export const useSubscriptionBase = () => {
 // A subscriber's own subscription URL: the deployment's base with their name on
 // the end. The name is the subscription id, which is why renaming one breaks
 // every client application holding the old link.
-export const subscriptionURL = (base: string, name: string) =>
-    `${base.replace(/\/$/, "")}/${encodeURIComponent(name)}`;
+export type SubscriptionFormat = "links" | "clash" | "json";
+
+export const subscriptionURL = (
+    base: string,
+    name: string,
+    format: SubscriptionFormat = "links",
+) => {
+    const url = `${base.replace(/\/+$/, "")}/${encodeURIComponent(name)}`;
+    return format === "links" ? url : `${url}?${new URLSearchParams({ format })}`;
+};
+
+export interface SubscriptionFormatInfo {
+    nodeCount: number;
+    omittedProtocols: string[];
+}
+
+export interface ClientSubscriptionInfo {
+    enabled: boolean;
+    formats: Record<SubscriptionFormat, SubscriptionFormatInfo>;
+}
+
+export const useClientSubscriptionInfo = (clientId: number) =>
+    useSWR<ClientSubscriptionInfo, Error>(`/clients/${clientId}/subscription-info`, () =>
+        request.get<ClientSubscriptionInfo>(`/clients/${clientId}/subscription-info`),
+    );
 
 // How many subscribers a page holds to begin with, and what else it can be set to.
 // Ten is a screen's worth, which is where the reference starts; the rest are for

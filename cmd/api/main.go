@@ -82,6 +82,7 @@ func run() error {
 	inbounds := service.NewInboundService(store)
 	outbounds := service.NewOutboundService(store)
 	settings := service.NewSettingService(store)
+	subscriptions := service.NewSubscriptionService(store, settings, links)
 	telegram := service.NewTelegramService(settings)
 	configs := service.NewConfigService(store, settings, inbounds, outbounds)
 	system := service.NewSystemService(store, settings)
@@ -101,25 +102,26 @@ func run() error {
 	}
 
 	engine, err := buildRouter(cfg, routerDeps{
-		users:     users,
-		clients:   clients,
-		links:     links,
-		inbounds:  inbounds,
-		outbounds: outbounds,
-		configs:   configs,
-		settings:  settings,
-		telegram:  telegram,
-		system:    system,
-		stats:     stats,
-		panel:     panel,
-		tokens:    tokens,
-		health:    database.NewHealth(db),
+		users:         users,
+		clients:       clients,
+		links:         links,
+		subscriptions: subscriptions,
+		inbounds:      inbounds,
+		outbounds:     outbounds,
+		configs:       configs,
+		settings:      settings,
+		telegram:      telegram,
+		system:        system,
+		stats:         stats,
+		panel:         panel,
+		tokens:        tokens,
+		health:        database.NewHealth(db),
 	})
 	if err != nil {
 		return err
 	}
 
-	subscriptionEngine, err := buildSubscriptionRouter(cfg, service.NewSubscriptionService(store, settings, links))
+	subscriptionEngine, err := buildSubscriptionRouter(cfg, subscriptions)
 	if err != nil {
 		return err
 	}
@@ -190,19 +192,20 @@ func bootstrapAdmin(ctx context.Context, users *service.UserService) error {
 }
 
 type routerDeps struct {
-	users     *service.UserService
-	clients   *service.ClientService
-	links     *service.LinkService
-	inbounds  *service.InboundService
-	outbounds *service.OutboundService
-	configs   *service.ConfigService
-	settings  *service.SettingService
-	telegram  *service.TelegramService
-	system    *service.SystemService
-	stats     *service.StatsService
-	panel     *service.PanelService
-	tokens    *middleware.TokenAuthenticator
-	health    handler.Pinger
+	users         *service.UserService
+	clients       *service.ClientService
+	links         *service.LinkService
+	subscriptions *service.SubscriptionService
+	inbounds      *service.InboundService
+	outbounds     *service.OutboundService
+	configs       *service.ConfigService
+	settings      *service.SettingService
+	telegram      *service.TelegramService
+	system        *service.SystemService
+	stats         *service.StatsService
+	panel         *service.PanelService
+	tokens        *middleware.TokenAuthenticator
+	health        handler.Pinger
 }
 
 func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
@@ -243,7 +246,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 	base := cfg.Server.Base()
 
 	userHandler := handler.NewUserHandler(deps.users, deps.tokens, deps.telegram, cfg.Session.MaxAge.Duration())
-	clientHandler := handler.NewClientHandler(deps.clients, deps.links, cfg.Subscription)
+	clientHandler := handler.NewClientHandler(deps.clients, deps.links, cfg.Subscription, deps.subscriptions)
 	inboundHandler := handler.NewInboundHandler(deps.inbounds)
 	outboundHandler := handler.NewOutboundHandler(deps.outbounds)
 	configHandler := handler.NewConfigHandler(deps.configs)

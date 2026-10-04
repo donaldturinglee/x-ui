@@ -32,7 +32,8 @@ func mountAPI() *gin.Engine {
 	stats := service.NewStatsService(store, 0, 0)
 
 	userHandler := NewUserHandler(users, middleware.NewTokenAuthenticator(users), telegram, 0)
-	clientHandler := NewClientHandler(clients, service.NewLinkService(store), config.SubscriptionConfig{})
+	links := service.NewLinkService(store)
+	clientHandler := NewClientHandler(clients, links, config.SubscriptionConfig{}, service.NewSubscriptionService(store, settings, links))
 	inboundHandler := NewInboundHandler(inbounds)
 	outboundHandler := NewOutboundHandler(outbounds)
 	configHandler := NewConfigHandler(configs)
@@ -100,6 +101,7 @@ func TestRegisterMountsEveryRouteWithoutConflict(t *testing.T) {
 		"POST /api/clients/:id",
 		"DELETE /api/clients/:id",
 		"GET /api/clients/:id/links",
+		"GET /api/clients/:id/subscription-info",
 		"POST /api/clients/:id/reset-traffic",
 		"GET /api/client-groups",
 		"POST /api/traffic",

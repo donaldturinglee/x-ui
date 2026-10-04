@@ -136,6 +136,9 @@ func (s *SubscriptionService) renderLinks(ctx context.Context, client *domain.Cl
 	if err != nil {
 		return "", err
 	}
+	if len(links) == 0 {
+		return "", domain.Invalidf("no nodes are available in the links subscription")
+	}
 
 	showInfo, err := s.settings.GetBool(ctx, domain.SettingSubShowInfo)
 	if err != nil {

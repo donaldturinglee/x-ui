@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+
 	"github.com/donaldturinglee/x-ui/internal/config"
 	"github.com/donaldturinglee/x-ui/internal/domain"
 	"github.com/donaldturinglee/x-ui/internal/middleware"
@@ -19,10 +21,15 @@ const (
 	maxPageSize     = 1000
 )
 
+type subscriptionInfoReader interface {
+	Info(context.Context, uint, string) (*service.ClientSubscriptionInfo, error)
+}
+
 // ClientHandler serves subscribers.
 type ClientHandler struct {
-	clients *service.ClientService
-	links   *service.LinkService
+	clients       *service.ClientService
+	links         *service.LinkService
+	subscriptions subscriptionInfoReader
 	// The subscription listener's own configuration, for telling an operator
 	// where a subscriber fetches from. It is read rather than served by this
 	// process: the two listeners are configured separately on purpose.
@@ -33,8 +40,9 @@ func NewClientHandler(
 	clients *service.ClientService,
 	links *service.LinkService,
 	subscription config.SubscriptionConfig,
+	subscriptions subscriptionInfoReader,
 ) *ClientHandler {
-	return &ClientHandler{clients: clients, links: links, subscription: subscription}
+	return &ClientHandler{clients: clients, links: links, subscription: subscription, subscriptions: subscriptions}
 }
 
 func (h *ClientHandler) Register(g *gin.RouterGroup) {
@@ -44,6 +52,7 @@ func (h *ClientHandler) Register(g *gin.RouterGroup) {
 	g.POST("/clients/:id", h.update)
 	g.DELETE("/clients/:id", h.delete)
 	g.GET("/clients/:id/links", h.clientLinks)
+	g.GET("/clients/:id/subscription-info", h.subscriptionInfo)
 	g.POST("/clients/:id/reset-traffic", h.resetTraffic)
 	// Distinct path rather than /clients/groups: a static segment beside the
 	// :id parameter at the same position is exactly the shape that makes a
@@ -168,6 +177,21 @@ func (h *ClientHandler) clientLinks(c *gin.Context) {
 		return
 	}
 	httputil.Data(c, links)
+}
+
+func (h *ClientHandler) subscriptionInfo(c *gin.Context) {
+	id, err := idParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	info, err := h.subscriptions.Info(c.Request.Context(), id, requestHost(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	httputil.Data(c, info)
 }
 
 // subscriptionURI reports where subscribers fetch from, so the panel can show
