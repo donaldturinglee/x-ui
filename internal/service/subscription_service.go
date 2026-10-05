@@ -286,7 +286,13 @@ func identityKeyFor(inboundType string, options map[string]interface{}) string {
 // nodeNames reserves the selectors and built-in destinations in the generated
 // configurations. A subscriber may use any of these words as their own name.
 func nodeNames() map[string]bool {
-	return map[string]bool{groupProxy: true, groupAuto: true, "direct": true, "DIRECT": true, "REJECT": true}
+	return map[string]bool{
+		groupProxy: true,
+		groupAuto:  true,
+		"direct":   true,
+		"DIRECT":   true,
+		"REJECT":   true,
+	}
 }
 
 // uniqueTag keeps the subscriber's name, adding a numbered suffix when another

@@ -23,7 +23,10 @@ func TestClientNameIntegration(t *testing.T) {
 		want []string
 	}{
 		{"alice", []string{"alice", "alice-2"}},
-		{"Proxy", []string{"Proxy-2", "Proxy-3"}},
+		{"PROXY", []string{"PROXY-2", "PROXY-3"}},
+		{"AUTO", []string{"AUTO-2", "AUTO-3"}},
+		{"Proxy", []string{"Proxy", "Proxy-2"}},
+		{"Auto", []string{"Auto", "Auto-2"}},
 		{"direct", []string{"direct-2", "direct-3"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

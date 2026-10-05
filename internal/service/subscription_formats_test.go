@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -314,27 +315,149 @@ func TestClashRenderedConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rendered struct {
+		DNS struct {
+			DefaultNameserver            []string `yaml:"default-nameserver"`
+			ProxyServerNameserver        []string `yaml:"proxy-server-nameserver"`
+			Nameserver                   []string
+			Fallback                     []string
+			DirectNameserver             []string            `yaml:"direct-nameserver"`
+			DirectNameserverFollowPolicy bool                `yaml:"direct-nameserver-follow-policy"`
+			NameserverPolicy             map[string][]string `yaml:"nameserver-policy"`
+			FakeIPFilterMode             string              `yaml:"fake-ip-filter-mode"`
+			FakeIPFilter                 []string            `yaml:"fake-ip-filter"`
+		}
 		Proxies []struct{ Name string }
 		Groups  []struct {
-			Name    string
-			Proxies []string
+			Name     string
+			Type     string
+			Proxies  []string
+			URL      *string `yaml:"url"`
+			Interval *int    `yaml:"interval"`
 		} `yaml:"proxy-groups"`
+		RuleProviders map[string]struct {
+			Type, Behavior, Format, URL, Path string
+			Interval                          int
+		} `yaml:"rule-providers"`
 		Rules []string
 	}
 	if err := yaml.Unmarshal([]byte(body), &rendered); err != nil {
 		t.Fatal(err)
 	}
-	if len(rendered.Proxies) != len(nodes) || len(rendered.Groups) != 2 || rendered.Groups[0].Name != groupProxy || rendered.Groups[1].Name != groupAuto || rendered.Rules[len(rendered.Rules)-1] != "MATCH,Proxy" {
+	if len(rendered.Proxies) != len(nodes) || len(rendered.Groups) != 1 {
 		t.Fatalf("invalid rendered configuration: %+v", rendered)
+	}
+	group := rendered.Groups[0]
+	if group.Name != "PROXY" || group.Type != "select" {
+		t.Errorf("proxy group = %+v, want the PROXY select group", group)
+	}
+	wantProxies := []string{"tcp", "ws", "grpc", "httpupgrade", "http", "DIRECT"}
+	if !reflect.DeepEqual(group.Proxies, wantProxies) {
+		t.Errorf("group proxies = %v, want nodes in order followed by DIRECT: %v", group.Proxies, wantProxies)
+	}
+	if group.URL != nil || group.Interval != nil {
+		t.Errorf("proxy group contains health check settings: %+v", group)
+	}
+	if len(rendered.DNS.Nameserver) == 0 {
+		t.Error("nameserver is missing the remote DNS resolvers")
+	}
+	for _, resolver := range rendered.DNS.Nameserver {
+		if !strings.HasSuffix(resolver, "#"+group.Name) {
+			t.Errorf("nameserver resolver %q does not use the rendered proxy group %q", resolver, group.Name)
+		}
+	}
+	if rendered.DNS.Fallback == nil || len(rendered.DNS.Fallback) != 0 {
+		t.Errorf("fallback = %v, want an explicit empty list", rendered.DNS.Fallback)
+	}
+	if !reflect.DeepEqual(rendered.DNS.DefaultNameserver, []string{"system"}) {
+		t.Errorf("default DNS resolvers = %v, want only the system resolver", rendered.DNS.DefaultNameserver)
+	}
+	if !reflect.DeepEqual(rendered.DNS.ProxyServerNameserver, []string{"system"}) {
+		t.Errorf("proxy server DNS resolvers = %v, want only the system resolver", rendered.DNS.ProxyServerNameserver)
+	}
+	if !rendered.DNS.DirectNameserverFollowPolicy {
+		t.Error("direct DNS resolution does not follow the domain policies")
+	}
+	if !reflect.DeepEqual(rendered.DNS.DirectNameserver, []string{"system"}) {
+		t.Errorf("direct DNS resolvers = %v, want local resolution by default", rendered.DNS.DirectNameserver)
+	}
+	wantPolicies := map[string][]string{
+		"localhost":               {"system"},
+		"+.lan":                   {"system"},
+		"+.local":                 {"system"},
+		"rule-set:reject":         {"rcode://success"},
+		"rule-set:private,direct": {"system"},
+	}
+	if !reflect.DeepEqual(rendered.DNS.NameserverPolicy, wantPolicies) {
+		t.Errorf("nameserver policies = %v, want local and direct domains resolved locally and rejected domains answered with an empty success response: %v", rendered.DNS.NameserverPolicy, wantPolicies)
+	}
+	if rendered.DNS.FakeIPFilterMode != "blacklist" {
+		t.Errorf("fake IP filter mode = %q, want blacklist", rendered.DNS.FakeIPFilterMode)
+	}
+	for _, pattern := range []string{"rule-set:reject", "rule-set:private"} {
+		if !slices.Contains(rendered.DNS.FakeIPFilter, pattern) {
+			t.Errorf("fake IP filter is missing %q, which must use the real DNS policies", pattern)
+		}
+	}
+	for _, resolver := range []string{"223.5.5.5", "119.29.29.29", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"} {
+		if strings.Contains(body, resolver) {
+			t.Errorf("subscription still contains the removed DNS resolver %q", resolver)
+		}
+	}
+	wantProviders := map[string]struct{ Behavior, File, Path string }{
+		"reject":  {"domain", "geosite/category-ads-all.mrs", "./providers/reject.mrs"},
+		"direct":  {"domain", "geosite/cn.mrs", "./providers/direct.mrs"},
+		"private": {"domain", "geosite/private.mrs", "./providers/private.mrs"},
+		"proxy":   {"domain", "geosite/geolocation-!cn.mrs", "./providers/proxy.mrs"},
+		"lancidr": {"ipcidr", "geoip/private.mrs", "./providers/lancidr.mrs"},
+	}
+	if len(rendered.RuleProviders) != len(wantProviders) {
+		t.Fatalf("rule providers = %v, want the five routing rule providers", rendered.RuleProviders)
+	}
+	for name, want := range wantProviders {
+		provider, present := rendered.RuleProviders[name]
+		if !present {
+			t.Errorf("missing %s rule provider", name)
+			continue
+		}
+		if provider.Type != "http" || provider.Behavior != want.Behavior || provider.Format != "mrs" {
+			t.Errorf("%s provider = %+v, want an HTTP %s MRS rule provider", name, provider, want.Behavior)
+		}
+		wantURL := "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/" + want.File
+		if provider.URL != wantURL || provider.Path != want.Path || provider.Interval != 86400 {
+			t.Errorf("%s provider = %+v, want %s cached at %s and updated daily", name, provider, wantURL, want.Path)
+		}
+	}
+	wantRules := []string{
+		"DOMAIN,localhost,DIRECT",
+		"DOMAIN-SUFFIX,lan,DIRECT",
+		"DOMAIN-SUFFIX,local,DIRECT",
+		"RULE-SET,reject,REJECT",
+		"RULE-SET,private,DIRECT",
+		"RULE-SET,lancidr,DIRECT",
+		"RULE-SET,direct,DIRECT",
+		"RULE-SET,proxy,PROXY",
+		"GEOIP,CN,DIRECT",
+		"MATCH,PROXY",
+	}
+	if !reflect.DeepEqual(rendered.Rules, wantRules) {
+		t.Errorf("rules = %v, want local exceptions, reject, private, LAN, direct, proxy, China IPs and the final match in order: %v", rendered.Rules, wantRules)
 	}
 	// An installed Mihomo can validate the exact document, without starting a
 	// listener or contacting any of the example proxy servers.
 	if binary := os.Getenv("X_UI_TEST_MIHOMO"); binary != "" {
 		directory := t.TempDir()
 		if dataDir := os.Getenv("X_UI_TEST_MIHOMO_DATA_DIR"); dataDir != "" {
-			for _, name := range []string{"geoip.metadb", "Country.mmdb", "geoip.dat", "geosite.dat"} {
+			dataFiles := []string{"geoip.metadb", "Country.mmdb", "geoip.dat", "geosite.dat"}
+			for _, provider := range rendered.RuleProviders {
+				dataFiles = append(dataFiles, provider.Path)
+			}
+			for _, name := range dataFiles {
 				if data, err := os.ReadFile(filepath.Join(dataDir, name)); err == nil {
-					if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
+					path := filepath.Join(directory, name)
+					if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, data, 0600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -346,6 +469,63 @@ func TestClashRenderedConfiguration(t *testing.T) {
 		}
 		if output, err := exec.Command(binary, "-t", "-d", directory, "-f", path).CombinedOutput(); err != nil {
 			t.Fatalf("Mihomo rejected the subscription: %v\n%s", err, output)
+		}
+	}
+}
+
+func TestClashRenderedFormatting(t *testing.T) {
+	node := vlessNode()
+	node.Tag = "cus_UI2rxLzuMbqUTM_US_01"
+	body, err := renderClashNodes([]clientNode{*node})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGroup := `proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - cus_UI2rxLzuMbqUTM_US_01
+      - DIRECT
+`
+	if !strings.Contains(body, wantGroup) {
+		t.Fatalf("subscription does not contain the group in display order with two-space indentation:\n%s", body)
+	}
+	wantPolicies := `  nameserver-policy:
+    "localhost":
+      - system
+    "+.lan":
+      - system
+    "+.local":
+      - system
+    "rule-set:reject":
+      - rcode://success
+    "rule-set:private,direct":
+      - system
+`
+	if !strings.Contains(body, wantPolicies) {
+		t.Errorf("subscription does not preserve local DNS exceptions before rejection and direct policies with two-space indentation:\n%s", body)
+	}
+	wantRules := `rules:
+  - DOMAIN,localhost,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
+  - RULE-SET,reject,REJECT
+  - RULE-SET,private,DIRECT
+  - RULE-SET,lancidr,DIRECT
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,proxy,PROXY
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
+`
+	if !strings.Contains(body, wantRules) {
+		t.Errorf("subscription does not contain the rules with two-space indentation:\n%s", body)
+	}
+	if !strings.Contains(body, "rule-providers:\n") || !strings.Contains(body, "\n    path: ./providers/lancidr.mrs\n") {
+		t.Errorf("subscription does not contain the rule providers with two-space indentation:\n%s", body)
+	}
+	for _, name := range []string{"reject", "direct", "private", "proxy", "lancidr"} {
+		if !strings.Contains(body, "\n  "+name+":\n") {
+			t.Errorf("subscription does not contain the %s rule provider with two-space indentation:\n%s", name, body)
 		}
 	}
 }
@@ -383,15 +563,36 @@ func TestClashTemplateIsValid(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(clashTemplate), &config); err != nil {
 		t.Fatalf("clashTemplate is not valid YAML: %v", err)
 	}
-	// The rule set detours to the Proxy group, so that group has to exist in
-	// the rendered output or the configuration will not load.
-	rules, ok := config["rules"].([]interface{})
-	if !ok || len(rules) == 0 {
-		t.Fatalf("rules = %v, want a non-empty list", config["rules"])
+	providers, ok := config["rule-providers"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("rule-providers = %v, want an object", config["rule-providers"])
 	}
-	last, _ := rules[len(rules)-1].(string)
-	if !strings.HasSuffix(last, groupProxy) {
-		t.Errorf("final rule = %q, want it to detour to %q", last, groupProxy)
+	for _, name := range []string{"reject", "direct", "private", "proxy", "lancidr"} {
+		if _, present := providers[name]; !present {
+			t.Errorf("rule references a missing %s provider", name)
+		}
+	}
+	// Local exceptions and rejection precede domain routing, China IPs and the final PROXY rule.
+	rules, ok := config["rules"].([]interface{})
+	wantRules := []string{
+		"DOMAIN,localhost,DIRECT",
+		"DOMAIN-SUFFIX,lan,DIRECT",
+		"DOMAIN-SUFFIX,local,DIRECT",
+		"RULE-SET,reject,REJECT",
+		"RULE-SET,private,DIRECT",
+		"RULE-SET,lancidr,DIRECT",
+		"RULE-SET,direct,DIRECT",
+		"RULE-SET,proxy,PROXY",
+		"GEOIP,CN,DIRECT",
+		"MATCH," + groupProxy,
+	}
+	if !ok || len(rules) != len(wantRules) {
+		t.Fatalf("rules = %v, want the five routing rule sets between local exceptions and the China IP and match rules", config["rules"])
+	}
+	for i, want := range wantRules {
+		if rule, _ := rules[i].(string); rule != want {
+			t.Errorf("rule %d = %q, want %q", i, rule, want)
+		}
 	}
 }
 
@@ -412,6 +613,21 @@ func TestUniqueTag(t *testing.T) {
 
 	if got := uniqueTag("", map[string]bool{}); got != "node" {
 		t.Errorf("uniqueTag(\"\") = %q, want a fallback name", got)
+	}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{"PROXY", "PROXY-2"},
+		{"AUTO", "AUTO-2"},
+		{"Proxy", "Proxy"},
+		{"Auto", "Auto"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := uniqueTag(test.name, nodeNames()); got != test.want {
+				t.Errorf("uniqueTag(%q) = %q, want %q", test.name, got, test.want)
+			}
+		})
 	}
 }
 

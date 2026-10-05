@@ -67,40 +67,124 @@ const singBoxTemplate = `{
 }`
 
 // clashTemplate is the equivalent for Clash and Mihomo.
-const clashTemplate = `mixed-port: 7890
-allow-lan: false
-mode: rule
-log-level: info
-external-controller: 127.0.0.1:9090
-dns:
+const clashTemplate = `dns:
   enable: true
+  listen: 0.0.0.0:53
   ipv6: false
+  prefer-h3: false
+  respect-rules: false
+  use-hosts: false
+  use-system-hosts: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+
   default-nameserver:
-    - 1.1.1.1
-    - 8.8.8.8
+    - system
+
   nameserver:
-    - https://1.1.1.1/dns-query
-    - https://dns.google/dns-query
+    - "tls://1.1.1.1#PROXY"
+    - "tls://8.8.8.8#PROXY"
+    - "https://cloudflare-dns.com/dns-query#PROXY"
+    - "https://dns.google/dns-query#PROXY"
+
+  fallback: []
+
   proxy-server-nameserver:
     - system
-    - 1.1.1.1
-    - 8.8.8.8
+
+  direct-nameserver:
+    - system
+
+  direct-nameserver-follow-policy: true
+
+  nameserver-policy:
+    "localhost":
+      - system
+    "+.lan":
+      - system
+    "+.local":
+      - system
+    "rule-set:reject":
+      - rcode://success
+    "rule-set:private,direct":
+      - system
+
+  fake-ip-filter-mode: blacklist
   fake-ip-filter:
-    - "*.lan"
-    - "*.local"
+    - "+.lan"
+    - "+.local"
     - localhost
+    - "rule-set:reject"
+    - "rule-set:private"
+    - "geosite:category-ntp"
+    - "+.in-addr.arpa"
+    - "+.ip6.arpa"
+
+rule-providers:
+  reject:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs
+    path: ./providers/reject.mrs
+    interval: 86400
+
+  direct:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs
+    path: ./providers/direct.mrs
+    interval: 86400
+
+  private:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs
+    path: ./providers/private.mrs
+    interval: 86400
+
+  proxy:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/geolocation-!cn.mrs
+    path: ./providers/proxy.mrs
+    interval: 86400
+
+  lancidr:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs
+    path: ./providers/lancidr.mrs
+    interval: 86400
+
 rules:
-  - GEOIP,private,DIRECT,no-resolve
-  - MATCH,Proxy
+  - DOMAIN,localhost,DIRECT
+  - DOMAIN-SUFFIX,lan,DIRECT
+  - DOMAIN-SUFFIX,local,DIRECT
+  - RULE-SET,reject,REJECT
+  - RULE-SET,private,DIRECT
+  - RULE-SET,lancidr,DIRECT
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,proxy,PROXY
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
 `
 
 // Group names the selectors added over a subscriber's nodes.
 const (
-	groupProxy = "Proxy"
-	groupAuto  = "Auto"
+	groupProxy = "PROXY"
+	groupAuto  = "AUTO"
 )
+
+type clashProxyGroup struct {
+	Name    string   `yaml:"name"`
+	Type    string   `yaml:"type"`
+	Proxies []string `yaml:"proxies"`
+}
 
 func (s *SubscriptionService) renderSingBox(ctx context.Context, client *domain.Client, host string) (string, error) {
 	nodes, err := s.nodes(ctx, client, host)
@@ -166,9 +250,22 @@ func (s *SubscriptionService) renderClash(ctx context.Context, client *domain.Cl
 }
 
 func renderClashNodes(nodes []clientNode) (string, error) {
-	var config map[string]interface{}
-	if err := yaml.Unmarshal([]byte(clashTemplate), &config); err != nil {
+	var template yaml.Node
+	if err := yaml.Unmarshal([]byte(clashTemplate), &template); err != nil {
 		return "", err
+	}
+	var config map[string]interface{}
+	if err := template.Decode(&config); err != nil {
+		return "", err
+	}
+	// DNS policies are matched in declaration order. Retain their YAML node
+	// so encoding the surrounding maps cannot sort these policies by key.
+	if dns, ok := config["dns"].(map[string]interface{}); ok {
+		if dnsNode := findYAMLValue(template.Content[0], "dns"); dnsNode != nil {
+			if policy := findYAMLValue(dnsNode, "nameserver-policy"); policy != nil {
+				dns["nameserver-policy"] = policy
+			}
+		}
 	}
 
 	proxies := make([]interface{}, 0, len(nodes))
@@ -186,24 +283,24 @@ func renderClashNodes(nodes []clientNode) (string, error) {
 	}
 
 	config["proxies"] = proxies
-	config["proxy-groups"] = []interface{}{
-		map[string]interface{}{
-			"name": groupProxy, "type": "select",
-			"proxies": append([]string{groupAuto, "DIRECT"}, names...),
-		},
-		map[string]interface{}{
-			"name": groupAuto, "type": "url-test",
-			"proxies":  orEmptyStrings(names),
-			"url":      "https://www.gstatic.com/generate_204",
-			"interval": 300,
+	config["proxy-groups"] = []clashProxyGroup{
+		{
+			Name:    groupProxy,
+			Type:    "select",
+			Proxies: append(names, "DIRECT"),
 		},
 	}
 
-	rendered, err := yaml.Marshal(config)
-	if err != nil {
+	var rendered strings.Builder
+	encoder := yaml.NewEncoder(&rendered)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(config); err != nil {
 		return "", err
 	}
-	return string(rendered), nil
+	if err := encoder.Close(); err != nil {
+		return "", err
+	}
+	return rendered.String(), nil
 }
 
 // singBoxOutbound renders one node as a sing-box outbound, or nil when the
