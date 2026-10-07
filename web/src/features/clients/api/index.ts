@@ -191,6 +191,8 @@ export const MAXIMUM_VOLUME = 1_000_000;
 // The longest a periodic reset may be set to, which is what the API allows.
 export const MAXIMUM_RESET_DAYS = 365;
 
+export const DEFAULT_RESET_DAYS = 30;
+
 // Writing a subscriber and amending one ask for the same things, so they are
 // held to one shape rather than two that would have to be kept alike.
 //

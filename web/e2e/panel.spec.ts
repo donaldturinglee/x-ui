@@ -1196,11 +1196,11 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Group").fill("friends");
         await dialog.getByLabel("Volume (GiB)").fill("5");
 
-        // Repeating the quota asks for how often, starting at a day.
+        // Repeating the quota defaults to 30 days without typing a period.
+        await expect(dialog.getByRole("switch", { name: "Auto reset" })).not.toBeChecked();
         await expect(dialog.getByLabel("Reset days")).toHaveCount(0);
         await dialog.getByRole("switch", { name: "Auto reset" }).press("Space");
-        await expect(dialog.getByLabel("Reset days")).toHaveValue("1");
-        await dialog.getByLabel("Reset days").fill("30");
+        await expect(dialog.getByLabel("Reset days")).toHaveValue("30");
 
         await dialog.getByRole("button", { name: "Every inbound" }).click();
         await expect(dialog.getByRole("button", { name: /^Inbound tags/ })).toHaveAccessibleName(

@@ -20,6 +20,7 @@ import { useInbounds } from "@/features/inbounds/api";
 import { formatBytes } from "@/features/overview/api";
 
 import {
+    DEFAULT_RESET_DAYS,
     MAXIMUM_RESET_DAYS,
     MAXIMUM_VOLUME,
     quotaTone,
@@ -101,7 +102,7 @@ export const ClientFields = ({
         name: ["delayStart", "autoReset", "resetDays"],
     });
 
-    // Either switch on asks for at least a day; both off, none.
+    // Auto reset starts at 30 days, a held clock at one; keep any chosen period.
     const setClock = (changes: { delayStart?: boolean; autoReset?: boolean }) => {
         const next = { delayStart, autoReset, ...changes };
 
@@ -112,7 +113,8 @@ export const ClientFields = ({
             setValue("autoReset", changes.autoReset);
         }
 
-        setValue("resetDays", next.delayStart || next.autoReset ? Math.max(resetDays, 1) : 0);
+        const days = resetDays > 0 ? resetDays : next.autoReset ? DEFAULT_RESET_DAYS : 1;
+        setValue("resetDays", next.delayStart || next.autoReset ? days : 0);
 
         // A held clock that is not repeated ends where it is started, so the
         // date it had is let go.
