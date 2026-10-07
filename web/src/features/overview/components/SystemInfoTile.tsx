@@ -63,7 +63,15 @@ export const SystemInfoTile = () => {
 
                 <div className="col-span-3">Panel</div>
                 <div className="col-span-9">
-                    {status ? <Badge variant="accent">v{status.app.version}</Badge> : "—"}
+                    {status ? (
+                        <Badge variant="accent">
+                            {status.app.version.startsWith("v")
+                                ? status.app.version
+                                : `v${status.app.version}`}
+                        </Badge>
+                    ) : (
+                        "—"
+                    )}
                 </div>
 
                 <div className="col-span-3">Uptime</div>
