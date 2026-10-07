@@ -1221,6 +1221,38 @@ arguments, unmanaged agents or missing native statistics. Panel configuration,
 API/worker processes, agent credentials and remote nodes are not changed by
 the core restart task.
 
+The local core card's **Versions** button opens a dialog using `GET /core/versions`
+(with optional `refresh=true`), `POST /core/version/check`, `POST /core/version`
+and `GET /core/version/jobs/:id`. Version checks pin both target and exact current
+official SagerNet/sing-box release assets, SHA256 digests and a configuration
+fingerprint, expire after ten minutes, and are revalidated at queue and execution
+time. Only stable versions at least 1.14.0 with official packages are eligible.
+The capability requires root, systemd, the standard installation, package-owned
+`/usr/bin/sing-box`, `/etc/sing-box`, `/var/lib/sing-box` and a managed local native
+statistics agent. Custom executables, unit replacements and directories require
+command-line maintenance.
+
+A copied CLI runner persists jobs and private backups outside the installation
+under `/var/lib/x-ui/core-version/jobs/<id>`. Preparation verifies package size,
+digest, ownership, architecture, dependency transactions and free space, extracting
+only the regular sing-box executable for preflight checks. Both packages are ready
+before downtime. The candidate checks the actual service configuration and a
+native API compatibility document under the shared core configuration lock.
+After stopping and runtime-masking sing-box, the task snapshots configuration,
+state and local unit drop-ins, and installs only sing-box with the native package
+manager. Success requires a new process running the requested version and a
+healthy authenticated native statistics API. Failure reinstalls the exact previous
+package and restores the snapshot before verifying recovery. No unrelated package
+upgrade or panel database migration is performed.
+
+The task shares the host maintenance reservation with panel restart, core restart
+and panel upgrade. Agent reloads share the core configuration lock. Interrupted
+tasks recover instead of repeating installation. A persistent systemd recovery
+unit runs before sing-box and the agent at boot; a later helper starts and verifies
+the restored service without blocking systemd's boot ordering. Failed recovery
+retains the reservation and backups until `x-ui-cli core-version-resume` succeeds.
+Public task records exclude private configuration and package-manager output.
+
 Overview's **Upgrade** dialog uses `GET /upgrade` for cached release metadata
 and capability, `POST /upgrade/check` to refresh it, `POST /upgrade` to confirm
 the check ID/current version/config revision, and `GET /upgrade/jobs/:id` for

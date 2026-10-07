@@ -1,6 +1,10 @@
 import type { Page, Route } from "@playwright/test";
 
 import type { CoreRestartJob, CoreStatus } from "../../src/features/overview/api/core";
+import type {
+    CoreVersionCheck,
+    CoreVersionStatus,
+} from "../../src/features/overview/api/core-version";
 import type { UpgradeJob, UpgradeStatus } from "../../src/features/overview/api/upgrade";
 import type {
     PanelSettings,
@@ -52,6 +56,15 @@ export interface ApiState {
     coreRestartHold?: boolean;
     coreRestartOutcome?: "succeeded" | "failed";
     coreRestartPhase?: "checking" | "restarting" | "verifying";
+    coreVersions?: CoreVersionStatus;
+    coreVersionCheck?: CoreVersionCheck;
+    coreVersionChecks?: number;
+    coreVersionStarts?: number;
+    coreVersionPolls?: number;
+    coreVersionHold?: boolean;
+    coreVersionCheckFailure?: boolean;
+    coreVersionOutcome?: "succeeded" | "rolled_back" | "failed";
+    coreVersionNeedsRecovery?: boolean;
     upgrade?: UpgradeStatus;
     upgradeChecks?: number;
     upgradeStarts?: number;
@@ -334,7 +347,34 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
     state.outbounds ??= defaultOutbounds.map((outbound) => ({ ...outbound }));
     state.clients ??= [{ ...client }];
     state.baseConfig ??= { ...defaultBaseConfig };
-    state.coreStatus ??= { supported: true, state: "active", pid: 4242, uptimeSeconds: 3600 };
+    state.coreStatus ??= {
+        supported: true,
+        state: "active",
+        pid: 4242,
+        uptimeSeconds: 3600,
+        currentVersion: "1.14.2",
+    };
+    state.coreVersions ??= {
+        supported: state.coreStatus.supported,
+        reason: state.coreStatus.reason,
+        currentVersion: state.coreStatus.currentVersion ?? "1.14.2",
+        packageVersion: "1.14.2",
+        platform: "amd64",
+        manager: "apt",
+        configRevision: "core-version-revision",
+        versions: ["1.14.2", "1.14.1", "1.14.0"].map((version, index) => ({
+            id: index + 1,
+            version,
+            url: `https://github.com/SagerNet/sing-box/releases/tag/v${version}`,
+            publishedAt: "2026-10-01T00:00:00Z",
+            assetId: index + 10,
+            assetName: `sing-box_${version}_linux_amd64.deb`,
+            assetUrl: `https://github.com/SagerNet/sing-box/releases/download/v${version}/sing-box_${version}_linux_amd64.deb`,
+            assetSize: 32000000,
+            assetUpdatedAt: "2026-10-01T00:00:00Z",
+            sha256: "a".repeat(64),
+        })),
+    };
     state.upgrade ??= {
         supported: true,
         currentVersion: "v0.0.1",
@@ -1091,6 +1131,96 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
             return;
         }
 
+        if (path === "/core/versions" && method === "GET") {
+            await route.fulfill(envelope(state.coreVersions));
+            return;
+        }
+        if (path === "/core/version/check" && method === "POST") {
+            state.coreVersionChecks = (state.coreVersionChecks ?? 0) + 1;
+            const current = state.coreVersions!;
+            const target = current.versions.find(
+                (release) => release.version === request.postDataJSON().version,
+            );
+            if (state.coreVersionCheckFailure || !target) {
+                await route.fulfill(
+                    refusal(400, "The selected official release could not be verified."),
+                );
+                return;
+            }
+            state.coreVersionCheck = {
+                checkId: "c".repeat(32),
+                checkedAt: new Date().toISOString(),
+                currentVersion: current.currentVersion,
+                configRevision: current.configRevision,
+                direction: target.version < current.currentVersion ? "downgrade" : "upgrade",
+                target,
+            };
+            await route.fulfill(envelope(state.coreVersionCheck));
+            return;
+        }
+        if (path === "/core/version" && method === "POST") {
+            const current = state.coreVersions!;
+            const checked = state.coreVersionCheck;
+            const body = request.postDataJSON();
+            if (
+                !checked ||
+                body.checkId !== checked.checkId ||
+                body.expectedCurrentVersion !== current.currentVersion ||
+                body.configRevision !== current.configRevision
+            ) {
+                await route.fulfill(
+                    refusal(
+                        409,
+                        "Version or configuration changed. Check the selected version again.",
+                    ),
+                );
+                return;
+            }
+            state.coreVersionStarts = (state.coreVersionStarts ?? 0) + 1;
+            state.coreVersionPolls = 0;
+            current.job = {
+                id: String(state.coreVersionStarts).padStart(32, "0"),
+                state: "queued",
+                phase: "scheduled",
+                direction: checked.direction,
+                actor: "operator",
+                fromVersion: checked.currentVersion,
+                toVersion: checked.target.version,
+                requestedAt: new Date().toISOString(),
+                needsRecovery: false,
+            };
+            await route.fulfill({ ...envelope(current.job), status: 202 });
+            return;
+        }
+        if (path.startsWith("/core/version/jobs/") && method === "GET") {
+            const current = state.coreVersions!;
+            const job = current.job;
+            if (!job || !path.endsWith(`/${job.id}`)) {
+                await route.fulfill(refusal(404, "Core version task does not exist"));
+                return;
+            }
+            if (["queued", "running", "rolling_back"].includes(job.state)) {
+                state.coreVersionPolls = (state.coreVersionPolls ?? 0) + 1;
+                job.state = "running";
+                job.phase = state.coreVersionHold ? "downloading" : "verifying";
+                if (!state.coreVersionHold && state.coreVersionPolls >= 3) {
+                    job.state = state.coreVersionOutcome ?? "succeeded";
+                    job.finishedAt = new Date().toISOString();
+                    if (job.state === "succeeded") {
+                        current.currentVersion = current.packageVersion = job.toVersion;
+                        state.coreStatus!.currentVersion = job.toVersion;
+                        state.coreStatus!.pid++;
+                    } else
+                        job.error =
+                            job.state === "rolled_back"
+                                ? "The previous package, configuration and state were restored."
+                                : "The selected version failed validation; sing-box was not stopped.";
+                    job.needsRecovery = Boolean(state.coreVersionNeedsRecovery);
+                }
+            }
+            await route.fulfill(envelope(job));
+            return;
+        }
         if (path === "/core" && method === "GET") {
             await route.fulfill(envelope(state.coreStatus));
             return;

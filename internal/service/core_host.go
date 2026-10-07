@@ -128,6 +128,7 @@ func (systemdCoreHost) Info(ctx context.Context) (coreSnapshot, error) {
 		snapshot.Reason = "The local sing-box startup command is unsupported; use the service manager on the server."
 		return snapshot, nil
 	}
+	snapshot.CurrentVersion, _ = coreExecutableVersion(ctx, snapshot.Launch.Executable)
 	cfg, err := localCoreAgent()
 	if err != nil {
 		snapshot.Reason = "Coordinated restart requires the managed local agent, native statistics and the updated core reload helper."

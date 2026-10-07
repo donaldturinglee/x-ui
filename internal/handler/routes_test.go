@@ -42,6 +42,7 @@ func mountAPI() *gin.Engine {
 	systemHandler := NewSystemHandler(service.NewSystemService(store, settings))
 	statsHandler := NewStatsHandler(stats, settings, nil)
 	upgradeHandler := NewUpgradeHandler(service.NewUpgradeService(config.Default()))
+	coreVersionHandler := NewCoreVersionHandler(service.NewCoreVersionService(settings))
 
 	engine := gin.New()
 	statsHandler.RegisterHealth(engine)
@@ -63,6 +64,7 @@ func mountAPI() *gin.Engine {
 		systemHandler.Register(group)
 		statsHandler.Register(group)
 		upgradeHandler.Register(group)
+		coreVersionHandler.Register(group)
 	}
 
 	return engine
@@ -146,6 +148,10 @@ func TestRegisterMountsEveryRouteWithoutConflict(t *testing.T) {
 		"POST /api/core/restart",
 		"GET /api/core/restart/:id",
 		"GET /api/core/logs",
+		"GET /api/core/versions",
+		"POST /api/core/version/check",
+		"POST /api/core/version",
+		"GET /api/core/version/jobs/:id",
 		"GET /api/keypairs",
 		"POST /api/cert-probe",
 		"GET /api/backup",

@@ -1,5 +1,5 @@
 import { Badge, Button } from "@gamecrafters/base-ui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { formatUptime } from "../api";
 import {
@@ -10,9 +10,16 @@ import {
     useRestartCore,
     type CoreRestartJob,
 } from "../api/core";
+import {
+    coreVersionMessage,
+    isCoreVersionActive,
+    useCoreVersionJob,
+    useCoreVersions,
+} from "../api/core-version";
 
 import { CoreLogsDialog } from "./CoreLogsDialog";
 import { CoreRestartDialog } from "./CoreRestartDialog";
+import { CoreVersionDialog } from "./CoreVersionDialog";
 import { Tile } from "./Tile";
 
 const stateLabel = (state?: string) => {
@@ -36,6 +43,12 @@ const stateLabel = (state?: string) => {
 
 export const CoreInfoTile = () => {
     const { data, error: statusError, mutate: refresh } = useCoreStatus();
+    const { data: versions } = useCoreVersions();
+    const { data: versionTask } = useCoreVersionJob(versions?.job?.id);
+    const versionJob = versionTask ?? versions?.job;
+    const isChangingVersion = isCoreVersionActive(versionJob) || Boolean(versionJob?.needsRecovery);
+    const versionButton = useRef<HTMLButtonElement>(null);
+    const [showVersions, setShowVersions] = useState(false);
     const {
         trigger: restart,
         isMutating: isScheduling,
@@ -75,18 +88,39 @@ export const CoreInfoTile = () => {
             void refresh();
         }
     };
-    const reason = statusError?.message ?? data?.reason;
-    const progress =
-        job && progressError && timedOut === job.id
-            ? "Restart result is unconfirmed. Refresh or view logs."
-            : coreRestartMessage(job);
+    const reason = statusError?.message ?? data?.reason ?? versions?.reason;
+    const progress = isChangingVersion
+        ? coreVersionMessage(versionJob)
+        : job && progressError && timedOut === job.id
+          ? "Restart result is unconfirmed. Refresh or view logs."
+          : coreRestartMessage(job) || coreVersionMessage(versionJob);
 
     return (
         <>
-            <Tile title="sing-box">
-                <div className="grid grid-cols-12 items-center gap-x-2 gap-y-1">
+            <Tile
+                title="sing-box"
+                action={
+                    <Button
+                        ref={versionButton}
+                        type="button"
+                        size="small"
+                        className="ms-2"
+                        aria-label="Version management"
+                        disabled={(!versions?.supported && !versionJob) || isRestarting}
+                        title={versions?.reason ?? "Version management"}
+                        onClick={() => setShowVersions(true)}
+                    >
+                        Versions
+                    </Button>
+                }
+            >
+                <div className="grid grid-cols-12 items-center gap-x-2">
                     <div className="col-span-4">Target</div>
                     <div className="col-span-8">This server</div>
+                    <div className="col-span-4">Version</div>
+                    <div className="col-span-8">
+                        {data?.currentVersion || versions?.currentVersion || "—"}
+                    </div>
                     <div className="col-span-4">Status</div>
                     <div className="col-span-8">
                         <Badge variant={data?.state === "active" ? "success" : "attention"}>
@@ -100,11 +134,17 @@ export const CoreInfoTile = () => {
                         {data?.pid ? formatUptime(data.uptimeSeconds) : "—"}
                     </div>
                 </div>
-                <div className="mt-2 flex justify-center gap-2">
+                <div className="mt-2 flex flex-wrap justify-center gap-2">
                     <Button
                         type="button"
+                        size="small"
                         loading={isRestarting}
-                        disabled={!data?.supported || isRestarting || Boolean(statusError)}
+                        disabled={
+                            !data?.supported ||
+                            isRestarting ||
+                            isChangingVersion ||
+                            Boolean(statusError)
+                        }
                         onClick={() => {
                             reset();
                             setIsConfirming(true);
@@ -114,6 +154,7 @@ export const CoreInfoTile = () => {
                     </Button>
                     <Button
                         type="button"
+                        size="small"
                         aria-label="sing-box logs"
                         disabled={!data || data.state === "unavailable"}
                         onClick={() => setShowLogs(true)}
@@ -126,7 +167,7 @@ export const CoreInfoTile = () => {
                     title={reason ?? (job?.state === "failed" ? (job.error ?? progress) : progress)}
                     className="mt-1 truncate text-[12px] leading-4 text-[var(--foreground-color-muted)]"
                 >
-                    {reason ?? progress}
+                    {isChangingVersion ? progress : (reason ?? progress)}
                 </p>
             </Tile>
             {isConfirming && (
@@ -139,6 +180,12 @@ export const CoreInfoTile = () => {
             )}
             {showLogs && (
                 <CoreLogsDialog onClose={() => setShowLogs(false)} restartError={job?.error} />
+            )}
+            {showVersions && (
+                <CoreVersionDialog
+                    onClose={() => setShowVersions(false)}
+                    returnFocusRef={versionButton}
+                />
             )}
         </>
     );

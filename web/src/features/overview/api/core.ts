@@ -15,6 +15,7 @@ export interface CoreRestartJob {
 }
 
 export interface CoreStatus {
+    currentVersion?: string;
     supported: boolean;
     reason?: string;
     state: string;

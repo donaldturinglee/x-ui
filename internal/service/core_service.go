@@ -32,12 +32,13 @@ func (job *CoreRestartJob) active() bool {
 }
 
 type CoreStatus struct {
-	Supported     bool            `json:"supported"`
-	Reason        string          `json:"reason,omitempty"`
-	State         string          `json:"state"`
-	PID           int             `json:"pid"`
-	UptimeSeconds int64           `json:"uptimeSeconds"`
-	RestartJob    *CoreRestartJob `json:"restartJob,omitempty"`
+	CurrentVersion string          `json:"currentVersion,omitempty"`
+	Supported      bool            `json:"supported"`
+	Reason         string          `json:"reason,omitempty"`
+	State          string          `json:"state"`
+	PID            int             `json:"pid"`
+	UptimeSeconds  int64           `json:"uptimeSeconds"`
+	RestartJob     *CoreRestartJob `json:"restartJob,omitempty"`
 }
 
 // Launch parameters come only from the fixed local systemd unit, never HTTP.

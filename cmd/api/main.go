@@ -255,6 +255,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 	systemHandler := handler.NewSystemHandler(deps.system)
 	statsHandler := handler.NewStatsHandler(deps.stats, deps.settings, deps.health)
 	upgradeHandler := handler.NewUpgradeHandler(service.NewUpgradeService(cfg))
+	coreVersionHandler := handler.NewCoreVersionHandler(service.NewCoreVersionService(deps.settings))
 
 	// Liveness sits at the root whatever the base path, and behind no
 	// authentication, because a load balancer and the CLI's healthcheck have no
@@ -285,6 +286,7 @@ func buildRouter(cfg *config.Config, deps routerDeps) (*gin.Engine, error) {
 		systemHandler.Register(group)
 		statsHandler.Register(group)
 		upgradeHandler.Register(group)
+		coreVersionHandler.Register(group)
 	}
 
 	mountWebUI(engine, cfg, base)

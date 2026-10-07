@@ -149,6 +149,17 @@ then attempts rollback if migration or readiness checks fail. Apply pending
 Panel/Subscription settings first. Task records and backups are retained under
 `/var/lib/x-ui/upgrade/jobs/`; `x-ui-cli upgrade-resume` retries interrupted recovery.
 
+Manage the local core separately through **Overview → sing-box → Versions**.
+Select an official stable version (1.14.0 or newer), check it and confirm Upgrade
+or Downgrade. This requires the standard root-managed Linux/systemd installation
+with an official APT/DNF sing-box package and the managed native-statistics agent.
+Both the selected package and the exact recovery package are verified before
+sing-box stops. Connections are closed during installation. Configuration or
+native API validation failure keeps the current process running; installation
+or readiness failure attempts to restore the previous package, configuration and
+state. Tasks and private backups remain under `/var/lib/x-ui/core-version/jobs/`.
+Run `x-ui-cli core-version-resume` to retry an interrupted or failed recovery.
+
 Run the installer again to upgrade. Existing configuration and valid node secrets
 are preserved. Before replacing an existing installation, it saves files and a
 database archive under `/usr/local/x-ui-backups/`; a failed upgrade attempts to

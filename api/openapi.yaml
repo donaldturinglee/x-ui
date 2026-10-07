@@ -1706,6 +1706,117 @@ paths:
                     properties:
                       obj: { $ref: "#/components/schemas/CoreStatus" }
 
+  /api/core/versions:
+    get:
+      tags: [system]
+      summary: Read official sing-box versions, capability and latest task
+      description: Standard root-managed Linux/systemd APT/DNF installations with native statistics only. Stable versions must be at least 1.14.0.
+      parameters:
+        - name: refresh
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Local capability and cached official release catalog
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreVersionStatus" }
+
+  /api/core/version/check:
+    post:
+      tags: [system]
+      summary: Pin a selected sing-box version and its exact recovery package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version: { type: string, example: "1.14.1" }
+      responses:
+        "200":
+          description: Pinned check, valid for ten minutes; no service change
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreVersionCheck" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/core/version:
+    post:
+      tags: [system]
+      summary: Confirm and queue a sing-box upgrade or downgrade
+      description: |
+        Revalidates the check and installation fingerprint. Repeating the same
+        accepted check returns its existing task. An independent systemd helper
+        prepares both verified packages and validates configuration before stopping
+        sing-box. Failure attempts rollback; unrecovered tasks block maintenance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkId, expectedCurrentVersion, configRevision]
+              properties:
+                checkId: { type: string, pattern: "^[a-f0-9]{32}$" }
+                expectedCurrentVersion: { type: string }
+                configRevision: { type: string }
+      responses:
+        "202":
+          description: Task queued or the matching existing task
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreVersionJob" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/core/version/jobs/{id}:
+    get:
+      tags: [system]
+      summary: Read a persisted sing-box version task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-f0-9]{32}$" }
+      responses:
+        "200":
+          description: Public progress and recovery status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/CoreVersionJob" }
+        "404":
+          description: Task does not exist
+
   /api/core/restart:
     post:
       tags: [system]
@@ -2166,6 +2277,50 @@ components:
         error: { type: string }
         needsRecovery: { type: boolean }
 
+    CoreVersionStatus:
+      type: object
+      required: [supported, currentVersion, packageVersion, platform, manager, configRevision, versions]
+      properties:
+        supported: { type: boolean }
+        reason: { type: string }
+        currentVersion: { type: string }
+        packageVersion: { type: string }
+        platform: { type: string }
+        manager: { type: string, enum: [apt, dnf, ""] }
+        configRevision: { type: string }
+        versions: { type: array, items: { $ref: "#/components/schemas/UpgradeRelease" } }
+        checkedAt: { type: string, format: date-time }
+        checkError: { type: string }
+        blockedReason: { type: string }
+        job: { $ref: "#/components/schemas/CoreVersionJob" }
+
+    CoreVersionCheck:
+      type: object
+      required: [checkId, checkedAt, currentVersion, configRevision, direction, target]
+      properties:
+        checkId: { type: string, pattern: "^[a-f0-9]{32}$" }
+        checkedAt: { type: string, format: date-time }
+        currentVersion: { type: string }
+        configRevision: { type: string }
+        direction: { type: string, enum: [upgrade, downgrade] }
+        target: { $ref: "#/components/schemas/UpgradeRelease" }
+
+    CoreVersionJob:
+      type: object
+      required: [id, state, phase, direction, actor, fromVersion, toVersion, requestedAt, needsRecovery]
+      properties:
+        id: { type: string, pattern: "^[a-f0-9]{32}$" }
+        state: { type: string, enum: [queued, running, rolling_back, succeeded, rolled_back, failed] }
+        phase: { type: string }
+        direction: { type: string, enum: [upgrade, downgrade] }
+        actor: { type: string }
+        fromVersion: { type: string }
+        toVersion: { type: string }
+        requestedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        error: { type: string }
+        needsRecovery: { type: boolean }
+
     CoreStatus:
       type: object
       required: [supported, state, pid, uptimeSeconds]
@@ -2175,6 +2330,7 @@ components:
         state: { type: string, description: Systemd ActiveState, unavailable or unknown. }
         pid: { type: integer, minimum: 0 }
         uptimeSeconds: { type: integer, format: int64, minimum: 0 }
+        currentVersion: { type: string, description: Installed stable sing-box version, when available. }
         restartJob: { $ref: "#/components/schemas/CoreRestartJob" }
 
     CoreRestartJob:

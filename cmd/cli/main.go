@@ -78,6 +78,10 @@ func run(args []string) error {
 		return panelRestartCommand(rest)
 	case "core-restart":
 		return coreRestartCommand(rest)
+	case "core-version-run":
+		return coreVersionCommand(rest)
+	case "core-version-resume":
+		return coreVersionResumeCommand(rest)
 	case "upgrade-run":
 		return upgradeCommand(rest)
 	case "upgrade-resume":
@@ -113,6 +117,8 @@ func usage() {
 	fmt.Println("    node           configure or check the local node and native statistics")
 	fmt.Println("    panel-restart  execute a queued Panel restart task (service manager only)")
 	fmt.Println("    core-restart   execute a queued local sing-box restart task (service manager only)")
+	fmt.Println("    core-version-run execute a queued sing-box version change (service manager only)")
+	fmt.Println("    core-version-resume recover an interrupted sing-box version change")
 	fmt.Println("    upgrade-run    execute a queued upgrade task (service manager only)")
 	fmt.Println("    upgrade-resume recover an interrupted upgrade from its retained checkpoint")
 	fmt.Println("    database       check backup tools, back up or restore the complete database")

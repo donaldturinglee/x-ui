@@ -104,7 +104,7 @@ func HostMaintenance(directory string) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		for _, suffix := range []string{"/upgrade", "/upgrade/check", "/settings/panel", "/settings/subscription", "/settings/apply", "/settings/panel/restart", "/core/restart", "/backup/restore"} {
+		for _, suffix := range []string{"/upgrade", "/upgrade/check", "/settings/panel", "/settings/subscription", "/settings/apply", "/settings/panel/restart", "/core/restart", "/core/version", "/core/version/check", "/backup/restore"} {
 			if strings.HasSuffix(c.FullPath(), suffix) {
 				c.Next()
 				return

@@ -36,7 +36,7 @@ func maintenanceActive(directory string) (*maintenanceOperation, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !panelJobID.MatchString(operation.ID) || (operation.Kind != "panel" && operation.Kind != "core" && operation.Kind != "upgrade") {
+	if !panelJobID.MatchString(operation.ID) || (operation.Kind != "panel" && operation.Kind != "core" && operation.Kind != "upgrade" && operation.Kind != "core-version") {
 		return nil, fmt.Errorf("Invalid host maintenance record")
 	}
 	return &operation, nil
@@ -59,6 +59,10 @@ func maintenancePrune(directory string, operation *maintenanceOperation) bool {
 	defer unlock()
 	if operation.Kind == "upgrade" {
 		record, err := readUpgradeRecord(upgradeRoot(directory), operation.ID)
+		return err == nil && !record.Job.active() && !record.Job.NeedsRecovery
+	}
+	if operation.Kind == "core-version" {
+		record, err := readCoreVersionRecord(coreVersionRoot(directory), operation.ID)
 		return err == nil && !record.Job.active() && !record.Job.NeedsRecovery
 	}
 	if operation.Kind == "panel" {
