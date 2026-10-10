@@ -118,6 +118,7 @@ func TestRegisterMountsEveryRouteWithoutConflict(t *testing.T) {
 		"GET /api/outbounds/:id",
 		"POST /api/outbounds/:id",
 		"DELETE /api/outbounds/:id",
+		"POST /api/outbounds/:id/check",
 		"GET /api/config",
 		"GET /api/config/download",
 		"GET /api/config/base",

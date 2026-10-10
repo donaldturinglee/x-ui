@@ -12,11 +12,12 @@ import (
 
 // OutboundService owns the routes out of a node.
 type OutboundService struct {
-	store *repository.Store
+	store  *repository.Store
+	checks *outboundChecker
 }
 
 func NewOutboundService(store *repository.Store) *OutboundService {
-	return &OutboundService{store: store}
+	return &OutboundService{store: store, checks: newOutboundChecker(store.Outbounds.FindById)}
 }
 
 // List returns every outbound in the panel's own shape, with the stored options

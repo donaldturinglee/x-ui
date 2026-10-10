@@ -1,15 +1,18 @@
-import { Badge } from "@gamecrafters/base-ui/react";
+import { Badge, IconButton, Tooltip } from "@gamecrafters/base-ui/react";
 import {
     DataTrendingRegular,
     DocumentDismissRegular,
     DocumentEditRegular,
+    DismissCircleRegular,
+    TopSpeedRegular,
 } from "@gamecrafters/base-ui-icons";
 import { useRef, useState } from "react";
 
 import { CardAction, TaggedCard } from "@/components/TaggedCard";
 import { useOnlines } from "@/features/overview/api";
 
-import { destination, tlsState, WIREGUARD, type Outbound } from "../api";
+import { destination, refusesAll, tlsState, WIREGUARD, type Outbound } from "../api";
+import type { OutboundCheckState } from "../api/useOutboundChecks";
 
 import { DeleteOutboundDialog } from "./DeleteOutboundDialog";
 
@@ -19,17 +22,26 @@ interface OutboundCardProps {
     isLast: boolean;
     onEdit: () => void;
     onTraffic: () => void;
+    check?: OutboundCheckState;
+    checkDisabled?: boolean;
+    onCheck: () => void;
 }
 
 // A route out as the reference draws one: where it sends traffic, whether it
 // wraps it in TLS on the way, and whether anything has gone out through it
-// lately. The reference also measures how long the far end takes to answer; the
-// panel does not run the proxy core that would have to do the measuring, so
-// there is no delay to show.
+// lately. Delay measures an HTTP probe routed through this outbound by the core.
 //
 // A type that sends traffic nowhere -- direct lets it out as it is, block drops
 // it -- has neither a server nor a port. A WireGuard route's are its peer's.
-export const OutboundCard = ({ outbound, isLast, onEdit, onTraffic }: OutboundCardProps) => {
+export const OutboundCard = ({
+    outbound,
+    isLast,
+    onEdit,
+    onTraffic,
+    check,
+    checkDisabled,
+    onCheck,
+}: OutboundCardProps) => {
     const deleteButtonRef = useRef<HTMLButtonElement>(null);
     const [isDeleting, setIsDeleting] = useState(false);
     const { data: onlines } = useOnlines();
@@ -37,6 +49,7 @@ export const OutboundCard = ({ outbound, isLast, onEdit, onTraffic }: OutboundCa
     const { server, port } = destination(outbound);
     const tls = tlsState(outbound);
     const isOnline = (onlines?.outbound ?? []).includes(outbound.tag);
+    const isBlock = refusesAll(outbound.type);
 
     // Asked for from the button beside it, so that is where focus goes back to
     // when the answer is no.
@@ -105,6 +118,61 @@ export const OutboundCard = ({ outbound, isLast, onEdit, onTraffic }: OutboundCa
                     <Badge variant="success" className="h-[22px] px-2.5">
                         Online
                     </Badge>
+                ) : (
+                    "—"
+                )}
+            </dd>
+            <dt className="flex items-center gap-1">
+                Delay
+                {!isBlock && (
+                    <Tooltip type="description" text="Check connectivity through this outbound">
+                        <IconButton
+                            icon={<TopSpeedRegular size={20} />}
+                            aria-label={`Check ${outbound.tag}`}
+                            loading={check?.loading}
+                            loadingAnnouncement={`Checking ${outbound.tag}`}
+                            disabled={checkDisabled || check?.loading}
+                            variant="invisible"
+                            className="size-6 rounded-full"
+                            onClick={onCheck}
+                        />
+                    </Tooltip>
+                )}
+            </dt>
+            <dd aria-live="polite">
+                {isBlock ? (
+                    <Tooltip type="description" text="Block outbounds do not accept connections.">
+                        <Badge
+                            as="button"
+                            type="button"
+                            variant="invisible"
+                            className="h-[22px] px-0"
+                        >
+                            N/A
+                        </Badge>
+                    </Tooltip>
+                ) : check?.loading ? (
+                    <span className="sr-only">Checking</span>
+                ) : check?.result?.ok ? (
+                    <Badge variant="success" className="h-[22px] px-2">
+                        {check.result.delay} ms
+                    </Badge>
+                ) : check?.result ? (
+                    <Tooltip
+                        type="description"
+                        text={check.result.error || "Connection check failed."}
+                    >
+                        <Badge
+                            as="button"
+                            type="button"
+                            variant="danger"
+                            leadingVisual={<DismissCircleRegular size={14} />}
+                            aria-label={`Check failed for ${outbound.tag}`}
+                            className="h-[22px] gap-1 px-2"
+                        >
+                            Failed
+                        </Badge>
+                    </Tooltip>
                 ) : (
                     "—"
                 )}

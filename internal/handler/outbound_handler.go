@@ -24,6 +24,21 @@ func (h *OutboundHandler) Register(g *gin.RouterGroup) {
 	g.GET("/outbounds/:id", h.get)
 	g.POST("/outbounds/:id", h.update)
 	g.DELETE("/outbounds/:id", h.delete)
+	g.POST("/outbounds/:id/check", h.check)
+}
+
+func (h *OutboundHandler) check(c *gin.Context) {
+	id, err := idParam(c, "id")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	result, err := h.outbounds.Check(c.Request.Context(), id)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	httputil.Data(c, result)
 }
 
 func (h *OutboundHandler) list(c *gin.Context) {

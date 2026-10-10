@@ -1034,6 +1034,39 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/outbounds/{id}/check:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [outbounds]
+      summary: Check connectivity through a running outbound
+      description: |
+        Requires a local x-ui agent and sing-box with Clash API enabled. Reads
+        the controller and secret from the applied core configuration, then
+        tests https://www.gstatic.com/generate_204 through this outbound tag
+        with a 15-second timeout. Direct tests the server's direct connection;
+        selector and urltest use their current selection. Block is skipped.
+        Probe failures return success=true with obj.ok=false and obj.error.
+        At most four core probes run concurrently; duplicate in-flight requests
+        share one probe. Results are transient and never modify the outbound.
+        Clash delay tests update core test history and may cause urltest groups
+        to select a different outbound.
+      responses:
+        "200":
+          description: Probe result (including connection failures or skipped block)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      obj: { $ref: "#/components/schemas/OutboundCheckResult" }
+        "400":
+          description: Invalid outbound ID
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/load:
     get:
       tags: [panel]
@@ -2640,6 +2673,15 @@ components:
         id: { type: integer, format: int64 }
         type: { type: string, maxLength: 64, example: direct }
         tag: { type: string, maxLength: 64, description: Unique. Route rules detour to it by this name. }
+
+    OutboundCheckResult:
+      type: object
+      required: [ok, delay, error]
+      properties:
+        ok: { type: boolean }
+        delay: { type: integer, minimum: 0, maximum: 65535, description: HTTP probe delay in milliseconds. }
+        error: { type: string, description: Failure or skip reason; empty on success. }
+        skipped: { type: boolean, description: Present and true for a block outbound. }
 
     CoreConfig:
       type: object

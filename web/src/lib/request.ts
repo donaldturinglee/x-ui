@@ -1,4 +1,4 @@
-import axios, { type AxiosError } from "axios";
+import axios, { type AxiosError, type AxiosRequestConfig } from "axios";
 
 import { settings } from "@/settings";
 
@@ -82,6 +82,7 @@ const unwrap = async <T>(call: Promise<{ data: Envelope<T> }>) => {
 // these are the ones those are relied on to forward.
 export const request = {
     get: <T>(url: string) => unwrap<T>(client.get<Envelope<T>>(url)),
-    post: <T>(url: string, body?: unknown) => unwrap<T>(client.post<Envelope<T>>(url, body)),
+    post: <T>(url: string, body?: unknown, config?: AxiosRequestConfig) =>
+        unwrap<T>(client.post<Envelope<T>>(url, body, config)),
     delete: <T>(url: string) => unwrap<T>(client.delete<Envelope<T>>(url)),
 };

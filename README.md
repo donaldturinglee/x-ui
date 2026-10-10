@@ -242,6 +242,15 @@ x-ui-cli database -check
 sync and native statistics without generating proxy traffic. `x-ui-cli help`
 lists the available commands.
 
+In **Outbounds**, use the button beside **Delay** to check one route, or **Test all**
+to check them with up to four simultaneous probes. Enable **Clash API** under
+**Settings → Experimental** on the local sing-box core (for example,
+`127.0.0.1:9090`, with a secret), then wait for the agent to apply the configuration.
+Checks request `https://www.gstatic.com/generate_204` through the outbound with a
+15-second timeout. Direct tests the server's direct connection; block is skipped.
+Results last for the page session and clear when the configuration changes.
+Clash tests update core delay history and can change a urltest group's selection.
+
 Installed services read `/usr/local/x-ui/configs/config.yaml`. In a source
 checkout, configuration comes from [configs/config.yaml](configs/config.yaml),
 with `X_UI_*` environment variables taking precedence. Common settings include:

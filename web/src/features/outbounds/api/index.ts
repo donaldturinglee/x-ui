@@ -26,6 +26,20 @@ export interface Outbound {
 
 export const OUTBOUNDS_KEY = "/outbounds";
 
+export interface OutboundCheckResult {
+    ok: boolean;
+    delay: number;
+    error: string;
+    skipped?: boolean;
+}
+
+export const checkOutbound = (id: number, signal?: AbortSignal) =>
+    request.post<OutboundCheckResult>(
+        `${OUTBOUNDS_KEY}/${id}/check`,
+        {},
+        { signal, timeout: 20_000 },
+    );
+
 // Routes offered for creation. WireGuard is stored with the other routes in the
 // panel, then rendered as an endpoint for sing-box 1.14.
 export const OUTBOUND_TYPES = [
