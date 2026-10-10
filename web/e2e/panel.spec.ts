@@ -627,14 +627,20 @@ test.describe("the panel", () => {
         );
 
         // The same grid as the listeners': six to a row, the seventh starting
-        // the next one, and the one way to add another centred over them.
+        // the next one, and the add/check actions centred together over them.
         expect(new Set(boxes.slice(0, 6).map((box) => box.y)).size).toBe(1);
         expect(boxes[6].x).toBe(boxes[0].x);
 
         const grid = (await routes.boundingBox())!;
         const add = (await page.getByRole("button", { name: "Add Outbound" }).boundingBox())!;
+        const testAll = (await page
+            .getByRole("button", { name: "Test all", exact: true })
+            .boundingBox())!;
 
-        expect(Math.abs(add.x + add.width / 2 - (grid.x + grid.width / 2))).toBeLessThan(1);
+        expect(testAll.y).toBe(add.y);
+        expect(testAll.x).toBeGreaterThan(add.x + add.width);
+        const actionsMiddle = (add.x + testAll.x + testAll.width) / 2;
+        expect(Math.abs(actionsMiddle - (grid.x + grid.width / 2))).toBeLessThan(1);
     });
 
     test("deletes a route out once asked on its card", async ({ page }) => {
