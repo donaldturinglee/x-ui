@@ -62,6 +62,8 @@ configuration and report traffic. The proxy core carries the traffic.
 Key features:
 
 - Operator accounts, two-factor authentication and API tokens.
+- Telegram notifications, private `/help` and `/status` commands, and scheduled
+  server status reports through the worker.
 - Subscriber management, subscription links, traffic quotas and expiry.
 - A React panel served by the Go API, with separate panel and subscription listeners.
 - sing-box node configuration, synchronization and authenticated native statistics.
@@ -241,6 +243,32 @@ x-ui-cli database -check
 `healthcheck` checks the panel and database. `node -check` verifies configuration
 sync and native statistics without generating proxy traffic. `x-ui-cli help`
 lists the available commands.
+
+In **Settings → Telegram Bot**, save a dedicated bot's token and your private
+chat ID, then turn on **Enable Telegram Bot**. With one `x-ui-worker` running,
+send `/help` in that bot's private chat to see its commands and notification
+capabilities. Commands respond only to configured private chat IDs. The worker
+uses long polling, so the bot must not have an active webhook; no incoming
+HTTP endpoint is required.
+
+Send `/status` for the worker host's public IP, x-ui and local sing-box versions,
+host uptime and memory, recently active clients, cumulative network traffic,
+local core state, and the collection `DateTime`. Unavailable readings show
+`N/A`, and an unreadable core state shows `unknown`. Public IP discovery uses
+[ipify](https://www.ipify.org/) with a two-second timeout and a 30-minute cache.
+Online clients are those with traffic in the last five minutes; network traffic
+is the host's cumulative sent and received bytes, including other programs.
+
+Under **Status notification schedule**, turn on **Scheduled status notifications**
+to send this same report to the configured chats. **Interval (days)** defaults
+to `1`, and **Send time** to `00:00`. **Time zone** displays the worker's applied
+Panel time zone. Save the policy; the worker checks it every minute without
+needing a restart. Enabling or changing a policy starts at the next scheduled
+time, then repeats every N calendar days. Recovery skips past dates and can
+send today's due report. The saved snapshot and each chat's delivery progress
+survive restarts; retries reuse the original data and `DateTime`. The bot's main
+switch must also be on. Changing the Panel time zone uses the existing settings
+application workflow.
 
 In **Outbounds**, use the button beside **Delay** to check one route, or **Test all**
 to check them with up to four simultaneous probes. Enable **Clash API** under

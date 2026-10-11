@@ -487,7 +487,8 @@ signed-in operator.
   theirs is on.
 - **Telegram Bot** is the bot's token and chats, whether it sends at all, and
   which events it sends about; *Send a test message* tries the bot as it is
-  saved. See [Notifications](#notifications).
+  saved. The same main switch enables private `/help` commands in the worker.
+  See [Notifications](#notifications).
 - **Sing Box** is the configuration every node fetches (`GET /config`),
   assembled now and shown read-only, to copy or to download for a node set up by
   hand. It says so when maintenance is withholding the listeners from it.
@@ -1327,7 +1328,8 @@ run one worker alongside several API instances. Jobs are wrapped in `Recover`
 and `SkipIfStillRunning`: they contend for the same rows, and overlapping runs
 would each wait on the other's locks to do the same work twice. The subscribers
 a pass takes offline are named in one Telegram notification, when the bot is
-set up to send it.
+set up to send it. The worker also runs the Telegram command receiver, canceling
+its long poll and waiting for it to finish during shutdown.
 
 **`cmd/cli`** is what an operator reaches for when the panel is what is broken,
 and what a deploy script runs before it is up: `migrate` then `seed`. Every
@@ -1558,13 +1560,81 @@ own, and the bot as a whole (`tgBotEnable`, `tgNotifySignIn`,
 `tgNotifyDeplete`); the token is the one @BotFather hands out, and the chats
 are ids, negative for a group.
 
-The bot only sends. Each message is one `sendMessage` request to the Bot API,
-made when the event happens, so there is no process of its own, nothing held
-open and no polling for commands — a panel with the bot off does no work for it
-at all, and the host needs only to reach `api.telegram.org` over HTTPS.
+Each notification is one `sendMessage` request to the Bot API, made when the
+event happens. The worker also receives private `/help` and `/status` commands using
+`getUpdates` with a 30-second long poll and a separate 40-second HTTP timeout.
+Bot delivery needs outbound HTTPS access to `api.telegram.org`; no public
+webhook endpoint or extra bot process is required. An existing webhook is
+reported as a conflict and is never deleted automatically.
 
-- A notification never fails what sent it: a sign-in answers before the message
-  goes out, and a Telegram that is down costs a line in the log, not a sign-in
+The command menu is registered for private chats. Replies go only to the chat
+that requested the command, and only when that private chat ID is configured. Groups,
+other commands and unsupported updates are consumed without replies. Commands
+depend on `tgBotEnable`, independently of the notification event switches.
+The worker checks configuration every five seconds and cancels and joins the
+old consumer before applying a new token or chat list. It rechecks permissions
+before each reply and each reply retry. With the bot disabled it makes no Bot
+API requests. Deploy exactly one receiving worker for a dedicated bot token.
+
+The protected `tgUpdateCursor` setting stores the bot ID and next update offset.
+Processed or ignored updates are checkpointed before they are confirmed by the
+next `getUpdates` request. Restarts and token rotation for the same bot resume
+that cursor; switching to a different bot starts with its own queue. A failed
+checkpoint is retried without resending the reply. Network failures use bounded
+exponential backoff, Telegram's `retry_after` is respected, and all waits and
+requests can be canceled. Delivery and the database checkpoint cannot be made
+atomic: a crash between them or an ambiguous failed send may repeat a reply.
+
+`TelegramStatusService` collects a snapshot for `/status` and the scheduled
+report. Its nine lines are IP, x-ui version, local sing-box version, host uptime,
+host memory, recently active client count, cumulative host network traffic,
+local sing-box state, and `DateTime`. The readings reuse `SystemService`,
+`CoreService`, and `StatsService`; the latter's online window remains five
+minutes. Host uptime is calculated from boot time, not API or worker process
+uptime. Local systemd state `active` maps to `running`. Unsupported core probes
+show `unknown`, and missing metrics show `N/A` rather than zero. Byte formatting
+uses 1024-based units and two decimal places. Collection runs concurrently with
+a five-second deadline. Public IP lookup goes directly to `api64.ipify.org`
+over HTTPS, times out after two seconds, validates the returned address, caches
+success for 30 minutes and failure for one minute, and runs only when a status
+report is requested. Without that endpoint, the IP line is `N/A`.
+
+The Telegram settings form adds `tgNotifyStatus` (default false),
+`tgStatusEveryDays` (default 1; 1–36500 whole days), and `tgStatusSendTime`
+(default `00:00`; strict 24-hour `HH:mm`). It displays a read-only time zone
+from `GET /telegram/status-settings`, using the worker's recorded running
+configuration and falling back to the API's running zone when no worker record
+is available. Pending saved Panel settings do not change this display. The
+form has no next-notification field. A changed policy's activation timestamp is
+saved atomically with the runtime settings; ordinary unchanged saves do not
+move the schedule. Restoring defaults switches scheduled reports off and
+preserves internal progress.
+
+`TelegramStatusScheduleService` runs separately from command polling in the
+single worker, checks saved settings once a minute, and sends only with both
+bot and schedule switches on. The first plan starts strictly after activation,
+and its date anchors every N natural days in the worker's applied time zone.
+Calendar-date arithmetic preserves that cadence across months and DST.
+If a local send time does not exist during a DST transition, that date is
+skipped; a repeated local time still produces only one batch.
+Reconfiguration replaces the plan, historical dates are skipped, and today's
+due batch can be resumed. A batch is sampled once and persisted before any
+delivery. `tgStatusState` holds its snapshot, anchor, policy fingerprint and
+per-chat progress; `tgStatusPolicyChangedAt` records policy activation. Both
+are protected from settings reads, writes and resets. No bot token is stored
+in schedule state. Configuration is checked again before each send, so a
+revoked chat or disabled schedule stops queued recipients. Each failed chat
+gets at most three attempts per batch, with deferred backoff that respects
+`retry_after`; successful targets are skipped. A failed checkpoint is retried
+without resending within the running worker. Delivery and checkpoint still
+cannot be atomic, so the same crash/ambiguous-send duplicate limitation applies
+to scheduled reports. Expired batches stop sending, and the most recent
+previous snapshot and its per-chat records are retained when a plan is replaced
+or a batch expires. Shutdown cancels both receiver and schedule and joins them
+before closing the database.
+
+- A notification never fails what sent it: a sign-in answers without waiting
+  for the message, and a Telegram that is down costs a line in the log, not a sign-in
   or a pass of the worker. Every chat is tried whatever the ones before it
   said.
 - The token is part of the address a message is posted to, so an error from the
@@ -1580,8 +1650,13 @@ at all, and the host needs only to reach `api.telegram.org` over HTTPS.
 `go test ./...` needs no database: it covers the quota and expiry state
 machine, configuration loading and precedence, the migration loader, password
 handling and validation, the two-factor codes against RFC 6238's own test
-vectors, and the Telegram notifier against a stand-in for the Bot API — nothing
-in the suite reaches Telegram. Fixtures live in `test/data/`.
+vectors, and the Telegram notifier and command receiver against a stand-in for
+the Bot API — nothing in the suite reaches Telegram. Command tests cover private
+chat permissions, saved-setting changes, cancellation, persisted cursors, retries
+and token redaction. Status tests cover report formatting, unavailable readings,
+IP caching and cancellation, midnight and calendar-day scheduling, DST, restart
+recovery, saved-policy changes, and per-chat delivery/checkpoint failures.
+Telegram and IP discovery use local HTTP stand-ins. Fixtures live in `test/data/`.
 
 That is the whole suite, and the compose file brings up one database rather than
 two. What real SQL would exercise — upsert accumulation, the chunked purge,

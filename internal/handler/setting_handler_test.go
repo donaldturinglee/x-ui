@@ -78,3 +78,37 @@ func TestSubscriptionSettingsHTTPContract(t *testing.T) {
 		}
 	}
 }
+
+func TestTelegramStatusSettingsUseTheWorkerTimeZone(t *testing.T) {
+	t.Setenv("X_UI_CONFIG_DIR", t.TempDir())
+	if err := os.WriteFile(filepath.Join(config.Dir(), "config.yaml"), []byte("server:\n  port: 8000\ndatabase:\n  password: confidential\nworker:\n  time_location: UTC\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewSettingHandler(nil, nil, cfg).Register(router.Group("/api"))
+	read := func(want string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/telegram/status-settings", nil))
+		var reply struct {
+			Obj struct {
+				TimeZone string `json:"timeZone"`
+			} `json:"obj"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &reply) != nil || reply.Obj.TimeZone != want || strings.Contains(response.Body.String(), "confidential") {
+			t.Fatalf("settings = %d %s, want zone %s", response.Code, response.Body, want)
+		}
+	}
+	read("UTC")
+	worker := *cfg
+	worker.Worker.TimeLocation = "Asia/Shanghai"
+	if err := service.RecordPanelProcess("worker", &worker); err != nil {
+		t.Fatal(err)
+	}
+	read("Asia/Shanghai")
+}

@@ -49,6 +49,16 @@ const (
 	// SettingTgNotifyDeplete tells the chats which subscribers the worker took
 	// offline for running out of quota or time.
 	SettingTgNotifyDeplete = "tgNotifyDeplete"
+	// Scheduled status reports are runtime options, independent of event notices.
+	SettingTgNotifyStatus    = "tgNotifyStatus"
+	SettingTgStatusEveryDays = "tgStatusEveryDays"
+	SettingTgStatusSendTime  = "tgStatusSendTime"
+	// Schedule state and its activation time survive restarts and form resets.
+	SettingTgStatusState           = "tgStatusState"
+	SettingTgStatusPolicyChangedAt = "tgStatusPolicyChangedAt"
+	// SettingTgUpdateCursor records the bot and the next command update to read.
+	// Bookkeeping, kept across restarts and operator settings resets.
+	SettingTgUpdateCursor = "tgUpdateCursor"
 	// The externally reachable address of the subscription endpoint is not here.
 	// It is subscription.public_url in configs/, with the rest of what describes
 	// that listener -- its port, path, domain and certificate. Keeping the
@@ -73,31 +83,41 @@ const (
 // unknown key would otherwise be stored, read by nothing, and look like it had
 // taken effect.
 var DefaultSettings = map[string]string{
-	SettingMaintenance:     "false",
-	SettingSubUpdates:      "12",
-	SettingSubEncode:       "true",
-	SettingSubShowInfo:     "false",
-	SettingTgBotEnable:     "false",
-	SettingTgBotToken:      "",
-	SettingTgBotChatIds:    "",
-	SettingTgNotifySignIn:  "true",
-	SettingTgNotifyDeplete: "true",
-	SettingCoreConfig:      DefaultCoreConfig,
-	SettingGlobalResetLast: "0",
-	SettingVersion:         "",
+	SettingMaintenance:             "false",
+	SettingSubUpdates:              "12",
+	SettingSubEncode:               "true",
+	SettingSubShowInfo:             "false",
+	SettingTgBotEnable:             "false",
+	SettingTgBotToken:              "",
+	SettingTgBotChatIds:            "",
+	SettingTgNotifySignIn:          "true",
+	SettingTgNotifyDeplete:         "true",
+	SettingTgNotifyStatus:          "false",
+	SettingTgStatusEveryDays:       "1",
+	SettingTgStatusSendTime:        "00:00",
+	SettingTgStatusState:           "",
+	SettingTgStatusPolicyChangedAt: "",
+	SettingTgUpdateCursor:          "",
+	SettingCoreConfig:              DefaultCoreConfig,
+	SettingGlobalResetLast:         "0",
+	SettingVersion:                 "",
 }
 
 // ProtectedSettings never travel over the settings endpoint, in either
 // direction.
 //
-// version and globalResetLast are bookkeeping the panel writes for itself.
+// version, globalResetLast, tgUpdateCursor and the status schedule records are
+// bookkeeping the processes write for themselves.
 // maintenance and config are here for a different reason: each has an endpoint
 // of its own that does more than write the value -- stopping service, or
 // validating a document -- and letting either through the generic save would
 // leave the two paths disagreeing.
 var ProtectedSettings = map[string]bool{
-	SettingMaintenance:     true,
-	SettingCoreConfig:      true,
-	SettingGlobalResetLast: true,
-	SettingVersion:         true,
+	SettingMaintenance:             true,
+	SettingCoreConfig:              true,
+	SettingGlobalResetLast:         true,
+	SettingTgUpdateCursor:          true,
+	SettingTgStatusState:           true,
+	SettingTgStatusPolicyChangedAt: true,
+	SettingVersion:                 true,
 }

@@ -107,6 +107,7 @@ export interface ApiState {
     twoFactor?: boolean;
     // How many test messages the Telegram bot was asked to send.
     telegramTests?: number;
+    telegramTimeZone?: string;
 }
 
 // The one code the mock's authenticator app shows, and the secret it was set up
@@ -130,6 +131,9 @@ export const defaultSettings: Record<string, string> = {
     tgBotChatIds: "",
     tgNotifySignIn: "true",
     tgNotifyDeplete: "true",
+    tgNotifyStatus: "false",
+    tgStatusEveryDays: "1",
+    tgStatusSendTime: "00:00",
 };
 
 // What the process read from configs/ when it started, as the settings page is
@@ -1427,6 +1431,18 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
 
         // Sent with the bot as it is saved, which the API refuses without a
         // token and a chat to send to.
+        if (path === "/telegram/status-settings" && method === "GET") {
+            await route.fulfill(
+                envelope({
+                    timeZone:
+                        state.telegramTimeZone ??
+                        state.panelSettings?.running.timeLocation ??
+                        "UTC",
+                }),
+            );
+            return;
+        }
+
         if (path === "/telegram/test" && method === "POST") {
             if (!state.settings?.tgBotToken || !state.settings.tgBotChatIds) {
                 await route.fulfill(

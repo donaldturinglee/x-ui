@@ -1,6 +1,8 @@
 // Command worker runs the scheduled work the panel depends on but no request
 // triggers: taking depleted clients offline, rolling periodic quotas over, and
-// keeping the traffic history inside its retention window.
+// keeping the traffic history inside its retention window. It also receives
+// private Telegram bot commands through one long-polling consumer.
+// Scheduled status reports share that bot and the worker's applied time zone.
 //
 // It is a separate process from the API so that a panel under load, or one
 // being restarted, does not stop enforcing quotas -- and so a deployment can
@@ -82,6 +84,7 @@ func run() error {
 	users := service.NewUserService(store)
 	telegram := service.NewTelegramService(settings)
 	stats := service.NewStatsService(store, cfg.Worker.StatsBucket.Duration(), cfg.Worker.StatsRetention.Duration())
+	status := service.NewTelegramStatusService(service.NewSystemService(store, settings), service.NewCoreService(settings), stats, location)
 
 	// Recover: robfig/cron does not recover panics, and one panicking job would
 	// otherwise take the whole worker down with it.
@@ -163,14 +166,30 @@ func run() error {
 	}
 	logger.Info("worker running with ", len(scheduler.Entries()), " scheduled job(s)")
 
+	commandCtx, cancelCommands := context.WithCancel(context.Background())
+	defer cancelCommands()
+	commandsDone := make(chan struct{})
+	go func() {
+		defer close(commandsDone)
+		service.NewTelegramCommandService(settings, telegram, status).Run(commandCtx)
+	}()
+	statusDone := make(chan struct{})
+	go func() {
+		defer close(statusDone)
+		service.NewTelegramStatusScheduleService(settings, telegram, status, location).Run(commandCtx)
+	}()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	sig := <-sigCh
 	logger.Info("received ", sig, ", shutting down")
+	cancelCommands()
 
 	// Stop returns a context that closes once every running job has finished,
 	// so a job mid-transaction is not cut off by the process exiting.
 	<-scheduler.Stop().Done()
+	<-commandsDone
+	<-statusDone
 	logger.Info("stopped")
 	return nil
 }

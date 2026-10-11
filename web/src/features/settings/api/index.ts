@@ -80,6 +80,9 @@ export const TG_BOT_TOKEN = "tgBotToken";
 export const TG_BOT_CHAT_IDS = "tgBotChatIds";
 export const TG_NOTIFY_SIGN_IN = "tgNotifySignIn";
 export const TG_NOTIFY_DEPLETE = "tgNotifyDeplete";
+export const TG_NOTIFY_STATUS = "tgNotifyStatus";
+export const TG_STATUS_EVERY_DAYS = "tgStatusEveryDays";
+export const TG_STATUS_SEND_TIME = "tgStatusSendTime";
 
 export const TELEGRAM_KEYS = [
     TG_BOT_ENABLE,
@@ -87,6 +90,9 @@ export const TELEGRAM_KEYS = [
     TG_BOT_CHAT_IDS,
     TG_NOTIFY_SIGN_IN,
     TG_NOTIFY_DEPLETE,
+    TG_NOTIFY_STATUS,
+    TG_STATUS_EVERY_DAYS,
+    TG_STATUS_SEND_TIME,
 ];
 
 // The shape @BotFather hands a token out in, and a chat's id: positive for a
@@ -111,6 +117,11 @@ export const telegramRequest = z
             ),
         notifySignIn: z.boolean(),
         notifyDeplete: z.boolean(),
+        notifyStatus: z.boolean(),
+        statusEveryDays: z.number().int().min(1).max(36500),
+        statusSendTime: z
+            .string()
+            .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm, from 00:00 to 23:59."),
     })
     // A bot switched on with nothing to send with or nowhere to send to would
     // look set up and never send a thing, which the API refuses as well.
@@ -134,6 +145,9 @@ export const fromTelegramSettings = (settings: Settings): TelegramRequest => ({
     // On until switched off, as the API starts them.
     notifySignIn: settings[TG_NOTIFY_SIGN_IN] !== "false",
     notifyDeplete: settings[TG_NOTIFY_DEPLETE] !== "false",
+    notifyStatus: toBoolean(settings[TG_NOTIFY_STATUS]),
+    statusEveryDays: toNumber(settings[TG_STATUS_EVERY_DAYS], 1),
+    statusSendTime: settings[TG_STATUS_SEND_TIME] ?? "00:00",
 });
 
 export const toTelegramPayload = (values: TelegramRequest): Settings => ({
@@ -142,7 +156,17 @@ export const toTelegramPayload = (values: TelegramRequest): Settings => ({
     [TG_BOT_CHAT_IDS]: values.chats.join(","),
     [TG_NOTIFY_SIGN_IN]: String(values.notifySignIn),
     [TG_NOTIFY_DEPLETE]: String(values.notifyDeplete),
+    [TG_NOTIFY_STATUS]: String(values.notifyStatus),
+    [TG_STATUS_EVERY_DAYS]: String(values.statusEveryDays),
+    [TG_STATUS_SEND_TIME]: values.statusSendTime,
 });
+
+export const useTelegramStatusSettings = () =>
+    useSWR<{ timeZone: string }, Error>(
+        "/telegram/status-settings",
+        () => request.get<{ timeZone: string }>("/telegram/status-settings"),
+        { refreshInterval: 60_000 },
+    );
 
 export const getSettings = async () => {
     return request.get<Settings>(SETTINGS_KEY);

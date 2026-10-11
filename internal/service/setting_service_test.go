@@ -50,3 +50,27 @@ func TestTheOtherSettingsAreStoredAsTheyCame(t *testing.T) {
 		t.Errorf("subUpdates = %q (%v), want it stored as it came", got, err)
 	}
 }
+
+func TestTelegramStatusPolicyValidation(t *testing.T) {
+	for _, value := range []string{"0", "-1", "1.5", "36501", "999999999999999999999999", ""} {
+		if _, err := normaliseSetting(domain.SettingTgStatusEveryDays, value); !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("interval %q accepted: %v", value, err)
+		}
+	}
+	if got, err := normaliseSetting(domain.SettingTgStatusEveryDays, "003"); err != nil || got != "3" {
+		t.Errorf("interval = %q (%v)", got, err)
+	}
+	for _, value := range []string{"", "24:00", "00:60", "9:00", "00:00:00", "-1:00"} {
+		if _, err := normaliseSetting(domain.SettingTgStatusSendTime, value); !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("time %q accepted: %v", value, err)
+		}
+	}
+	for _, value := range []string{"00:00", "23:59"} {
+		if got, err := normaliseSetting(domain.SettingTgStatusSendTime, value); err != nil || got != value {
+			t.Errorf("time %q rejected: %v", value, err)
+		}
+	}
+	if got, err := normaliseSetting(domain.SettingTgNotifyStatus, "TRUE"); err != nil || got != "true" {
+		t.Errorf("switch = %q (%v)", got, err)
+	}
+}

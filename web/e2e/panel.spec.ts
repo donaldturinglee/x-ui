@@ -948,7 +948,7 @@ test.describe("the panel", () => {
         // Switched on with nowhere to send from or to, it is refused before it
         // is saved, and there is nothing yet to test.
         await expect(test).toBeDisabled();
-        await form.getByRole("switch", { name: "Send notifications" }).press("Space");
+        await form.getByRole("switch", { name: "Enable Telegram Bot" }).press("Space");
         await expect(form).toContainText("Give the bot its token and at least one chat");
         await expect(save).toBeDisabled();
 
@@ -973,6 +973,52 @@ test.describe("the panel", () => {
         expect(state.telegramTests).toBe(1);
     });
 
+    test("saves a scheduled Telegram status policy and validates its interval", async ({
+        page,
+    }) => {
+        const state: ApiState = {
+            signedIn: true,
+            maintenance: false,
+            telegramTimeZone: "Asia/Shanghai",
+            settings: {
+                ...defaultSettings,
+                tgBotEnable: "true",
+                tgBotToken: "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0",
+                tgBotChatIds: "1111",
+            },
+        };
+        await mockApi(page, state);
+        await page.goto("/general/settings?tab=telegram");
+        const form = page.getByRole("form", { name: "Telegram Bot" });
+        const save = form.getByRole("button", { name: "Save", exact: true });
+        await expect(form.getByLabel("Send time", { exact: true })).toHaveValue("00:00");
+        await expect(form.getByLabel("Interval (days)")).toHaveValue("1");
+        await expect(form.getByLabel("Time zone", { exact: true })).toHaveValue("Asia/Shanghai");
+        await expect(form.getByLabel("Time zone", { exact: true })).toHaveAttribute("readonly", "");
+        await expect(form.getByText("Next notification", { exact: true })).toHaveCount(0);
+        await form.getByRole("switch", { name: "Scheduled status notifications" }).press("Space");
+        await form.getByLabel("Interval (days)").fill("0");
+        await expect(save).toBeDisabled();
+        await form.getByLabel("Interval (days)").fill("1.5");
+        await expect(save).toBeDisabled();
+        await form.getByLabel("Interval (days)").fill("3");
+        await form.getByLabel("Send time", { exact: true }).fill("23:59");
+        await save.click();
+        await expect(save).toBeDisabled();
+        expect(state.settings).toMatchObject({
+            tgNotifyStatus: "true",
+            tgStatusEveryDays: "3",
+            tgStatusSendTime: "23:59",
+        });
+        expect(state.settings).not.toHaveProperty("timeZone");
+        await page.reload();
+        await expect(form.getByLabel("Interval (days)")).toHaveValue("3");
+        await expect(form.getByLabel("Send time", { exact: true })).toHaveValue("23:59");
+        await expect(
+            form.getByRole("switch", { name: "Scheduled status notifications" }),
+        ).toBeChecked();
+    });
+
     test("puts back one tab's defaults without another's", async ({ page }) => {
         const state: ApiState = {
             signedIn: true,
@@ -982,6 +1028,9 @@ test.describe("the panel", () => {
                 subUpdates: "24",
                 tgBotToken: "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0",
                 tgBotChatIds: "1111",
+                tgNotifyStatus: "true",
+                tgStatusEveryDays: "7",
+                tgStatusSendTime: "12:30",
             },
         };
 
@@ -995,6 +1044,11 @@ test.describe("the panel", () => {
 
         await expect(form.getByLabel("Bot token")).toHaveValue("");
         await expect(form.getByLabel("Chat IDs (comma separated)")).toHaveValue("");
+        await expect(
+            form.getByRole("switch", { name: "Scheduled status notifications" }),
+        ).not.toBeChecked();
+        await expect(form.getByLabel("Interval (days)")).toHaveValue("1");
+        await expect(form.getByLabel("Send time", { exact: true })).toHaveValue("00:00");
         // The subscription's are the subscription tab's to put back.
         expect(state.settings?.subUpdates).toBe("24");
     });

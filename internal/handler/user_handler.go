@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/donaldturinglee/x-ui/internal/domain"
@@ -98,14 +99,15 @@ func (h *UserHandler) signIn(c *gin.Context) {
 		return
 	}
 
-	// Sent after the answer rather than before it: a Telegram that is slow or
-	// unreachable is no reason to keep an operator waiting on their panel.
-	username, address := user.Username, c.ClientIP()
+	// Capture the successful sign-in before sending asynchronously, so a slow
+	// Telegram does not change the message's time or hold up the panel's reply.
+	message := fmt.Sprintf(
+		"Sign in to the panel successfully.\nUsername: %s\nIP: %s\nDateTime: %s",
+		user.Username, c.ClientIP(), time.Now().Format("2006-01-02 15:04:05"))
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notificationTimeout)
 		defer cancel()
-		h.telegram.Notify(ctx, domain.SettingTgNotifySignIn,
-			"x-ui: "+username+" signed in to the panel from "+address+".")
+		h.telegram.Notify(ctx, domain.SettingTgNotifySignIn, message)
 	}()
 
 	httputil.Data(c, gin.H{"username": user.Username})

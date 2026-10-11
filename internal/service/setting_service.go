@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/donaldturinglee/x-ui/internal/domain"
 	"github.com/donaldturinglee/x-ui/internal/repository"
@@ -120,8 +121,17 @@ func (s *SettingService) Save(ctx context.Context, actor string, values map[stri
 	}
 
 	return s.store.Tx(ctx, func(tx *repository.Store) error {
+		changed, err := telegramStatusPolicyChanged(ctx, tx, accepted)
+		if err != nil {
+			return err
+		}
 		if err := tx.Settings.SetMany(ctx, accepted); err != nil {
 			return err
+		}
+		if changed {
+			if err := tx.Settings.Set(ctx, domain.SettingTgStatusPolicyChangedAt, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
 		}
 		return recordChange(ctx, tx, actor, "settings", "edit", keysOf(accepted))
 	})
@@ -168,6 +178,42 @@ func (s *SettingService) SetVersion(ctx context.Context, version string) error {
 	return s.store.Settings.Set(ctx, domain.SettingVersion, version)
 }
 
+// setTelegramUpdateCursor checkpoints command consumption without exposing it
+// through the operator settings form or recording it as an operator change.
+func (s *SettingService) setTelegramUpdateCursor(ctx context.Context, value string) error {
+	return s.store.Settings.Set(ctx, domain.SettingTgUpdateCursor, value)
+}
+
+// Read a coherent policy and its internal revision in one database query.
+func (s *SettingService) telegramStatusSettings(ctx context.Context) (map[string]string, error) {
+	return s.store.Settings.All(ctx)
+}
+
+func (s *SettingService) setTelegramStatusState(ctx context.Context, value string) error {
+	return s.store.Settings.Set(ctx, domain.SettingTgStatusState, value)
+}
+
+func telegramStatusPolicyChanged(ctx context.Context, store *repository.Store, saving map[string]string) (bool, error) {
+	for _, key := range []string{domain.SettingTgBotEnable, domain.SettingTgBotToken, domain.SettingTgBotChatIds,
+		domain.SettingTgNotifyStatus, domain.SettingTgStatusEveryDays, domain.SettingTgStatusSendTime} {
+		value, present := saving[key]
+		if !present {
+			continue
+		}
+		previous, err := store.Settings.Get(ctx, key)
+		if errors.Is(err, domain.ErrNotFound) {
+			previous, err = domain.DefaultSettings[key], nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if value != previous {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Reset restores the operator-facing settings to their defaults, keeping the
 // bookkeeping rows -- those are not settings anyone set, and dropping them
 // makes the data read as a fresh install to whatever runs next.
@@ -186,6 +232,27 @@ func (s *SettingService) Reset(ctx context.Context, actor string, keys []string)
 		}
 	}
 	return s.store.Tx(ctx, func(tx *repository.Store) error {
+		defaults := make(map[string]string)
+		if len(keys) == 0 {
+			for key, value := range domain.DefaultSettings {
+				if !domain.ProtectedSettings[key] {
+					defaults[key] = value
+				}
+			}
+		} else {
+			for _, key := range keys {
+				defaults[key] = domain.DefaultSettings[key]
+			}
+		}
+		changed, err := telegramStatusPolicyChanged(ctx, tx, defaults)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := tx.Settings.Set(ctx, domain.SettingTgStatusPolicyChangedAt, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
 		if len(keys) == 0 {
 			if err := tx.Settings.ResetOperatorSettings(ctx); err != nil {
 				return err
@@ -214,12 +281,22 @@ var telegramChatId = regexp.MustCompile(`^-?\d+$`)
 // that touches it.
 func normaliseSetting(key string, value string) (string, error) {
 	switch key {
-	case domain.SettingTgBotEnable, domain.SettingTgNotifySignIn, domain.SettingTgNotifyDeplete:
+	case domain.SettingTgBotEnable, domain.SettingTgNotifySignIn, domain.SettingTgNotifyDeplete, domain.SettingTgNotifyStatus:
 		on, err := strconv.ParseBool(value)
 		if err != nil {
 			return "", domain.Invalidf("setting %q is true or false, not %q", key, value)
 		}
 		return strconv.FormatBool(on), nil
+	case domain.SettingTgStatusEveryDays:
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 36500 {
+			return "", domain.Invalidf("status notification interval must be a whole number from 1 to 36500 days")
+		}
+		return strconv.Itoa(days), nil
+	case domain.SettingTgStatusSendTime:
+		if _, err := parseTelegramSendTime(value); err != nil {
+			return "", err
+		}
 	case domain.SettingTgBotToken:
 		if value != "" && !telegramToken.MatchString(value) {
 			return "", domain.Invalidf("that is not a Telegram bot token: @BotFather hands one out as the bot's id, a colon and a secret")

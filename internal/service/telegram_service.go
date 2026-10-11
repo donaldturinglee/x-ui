@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/donaldturinglee/x-ui/internal/domain"
@@ -120,7 +121,20 @@ func (t *TelegramService) bot(ctx context.Context) (string, []string, error) {
 type telegramReply struct {
 	Ok          bool   `json:"ok"`
 	Description string `json:"description"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
 }
+
+// telegramAPIError preserves the normal error classification while allowing
+// the command receiver to respect rate limits on both polling and replies.
+type telegramAPIError struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e *telegramAPIError) Error() string { return e.err.Error() }
+func (e *telegramAPIError) Unwrap() error { return e.err }
 
 // send delivers text to each chat in turn. Every chat is tried whatever the ones
 // before it said, and the first refusal is the one reported.
@@ -162,7 +176,7 @@ func (t *TelegramService) sendOne(ctx context.Context, token string, chat string
 		if errors.As(err, &addressed) {
 			err = addressed.Err
 		}
-		return domain.Invalidf("Telegram could not be reached: %v", err)
+		return domain.Invalidf("Telegram could not be reached: %s", redactTelegramToken(err.Error(), token))
 	}
 	defer response.Body.Close()
 
@@ -171,7 +185,18 @@ func (t *TelegramService) sendOne(ctx context.Context, token string, chat string
 		return domain.Invalidf("Telegram answered the message to chat %s with something other than the Bot API (status %d)", chat, response.StatusCode)
 	}
 	if !reply.Ok {
-		return domain.Invalidf("Telegram refused the message to chat %s: %s", chat, reply.Description)
+		return &telegramAPIError{
+			err: domain.Invalidf("Telegram refused the message to chat %s: %s",
+				chat, redactTelegramToken(reply.Description, token)),
+			retryAfter: time.Duration(reply.Parameters.RetryAfter) * time.Second,
+		}
 	}
 	return nil
+}
+
+func redactTelegramToken(message, token string) string {
+	if token == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, token, "[redacted]")
 }

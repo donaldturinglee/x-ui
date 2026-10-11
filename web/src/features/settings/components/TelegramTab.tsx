@@ -11,6 +11,7 @@ import {
     useResetSettings,
     useSaveSettings,
     useSendTelegramTest,
+    useTelegramStatusSettings,
     useSettings,
     type TelegramRequest,
 } from "../api";
@@ -25,22 +26,28 @@ const DEFAULTS: TelegramRequest = {
     chats: [],
     notifySignIn: true,
     notifyDeplete: true,
+    notifyStatus: false,
+    statusEveryDays: 1,
+    statusSendTime: "00:00",
 };
 
 // The Telegram bot the panel tells its operators things through: whether it
 // sends anything, the token @BotFather handed out for it and the chats it sends
-// to, and which events are worth a message. The bot answers nothing -- the
-// panel posts to Telegram when something happens and that is all -- so there is
-// no process to run for it, and a message is sent from whichever of the panel
-// and the worker saw the event.
+// to, and which events are worth a message. Notifications come from the panel
+// or worker that saw the event; the worker also answers private bot commands
+// and sends scheduled status reports.
 //
 // A test message goes to the chats as they are saved, whether or not the bot is
 // switched on, which is how a token is tried before anything depends on it.
 export const TelegramTab = () => {
     const tokenId = useId();
     const chatsId = useId();
+    const daysId = useId();
+    const timeId = useId();
+    const zoneId = useId();
 
     const { data: settings, error: readError, isLoading } = useSettings();
+    const { data: statusSettings, error: statusSettingsError } = useTelegramStatusSettings();
     const { trigger: save, isMutating: isSaving, error: saveError } = useSaveSettings();
     const {
         trigger: restore,
@@ -96,7 +103,7 @@ export const TelegramTab = () => {
 
                 <div className={FIELDS}>
                     <FilledSwitch
-                        label="Send notifications"
+                        label="Enable Telegram Bot"
                         className="min-[600px]:col-span-2 min-[840px]:col-span-3"
                         disabled={isLoading}
                         checked={values.enabled}
@@ -149,6 +156,56 @@ export const TelegramTab = () => {
                         onCheckedChange={(notifyDeplete) => change({ notifyDeplete })}
                     />
                 </div>
+
+                <Heading as="h3" className={GROUP_HEADING}>
+                    Status notification schedule
+                </Heading>
+                <div className={FIELDS}>
+                    <FilledSwitch
+                        label="Scheduled status notifications"
+                        className="min-[600px]:col-span-2 min-[840px]:col-span-3"
+                        disabled={isLoading}
+                        checked={values.notifyStatus}
+                        onCheckedChange={(notifyStatus) => change({ notifyStatus })}
+                    />
+                    <FilledTextInput
+                        id={daysId}
+                        label="Interval (days)"
+                        type="number"
+                        min={1}
+                        max={36500}
+                        step={1}
+                        disabled={isLoading}
+                        value={
+                            Number.isFinite(values.statusEveryDays) ? values.statusEveryDays : ""
+                        }
+                        onChange={(event) =>
+                            change({ statusEveryDays: Number(event.target.value) })
+                        }
+                    />
+                    <FilledTextInput
+                        id={timeId}
+                        label="Send time"
+                        type="time"
+                        step={60}
+                        disabled={isLoading}
+                        value={values.statusSendTime}
+                        onChange={(event) => change({ statusSendTime: event.target.value })}
+                    />
+                    <FilledTextInput
+                        id={zoneId}
+                        label="Time zone"
+                        readOnly
+                        value={
+                            statusSettings?.timeZone ?? (statusSettingsError ? "Unavailable" : "")
+                        }
+                    />
+                </div>
+                {statusSettingsError && (
+                    <InlineMessage variant="critical" className="mt-4">
+                        {statusSettingsError.message}
+                    </InlineMessage>
+                )}
 
                 {!checked.success && (
                     <InlineMessage variant="critical" className="mt-4">

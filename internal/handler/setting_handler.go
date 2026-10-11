@@ -46,8 +46,13 @@ func (h *SettingHandler) Register(g *gin.RouterGroup) {
 	g.POST("/settings/apply", h.applySettings)
 	g.GET("/settings/apply/:id", h.panelRestartStatus)
 	g.POST("/telegram/test", h.telegramTest)
+	g.GET("/telegram/status-settings", h.telegramStatusSettings)
 	g.GET("/maintenance", h.getMaintenance)
 	g.POST("/maintenance", h.setMaintenance)
+}
+
+func (h *SettingHandler) telegramStatusSettings(c *gin.Context) {
+	httputil.Data(c, gin.H{"timeZone": service.TelegramStatusTimeZone(h.startup.Worker.TimeLocation)})
 }
 
 func (h *SettingHandler) list(c *gin.Context) {

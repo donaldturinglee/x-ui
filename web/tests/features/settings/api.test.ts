@@ -96,6 +96,9 @@ const buildTelegram = (overrides: Partial<TelegramRequest> = {}): TelegramReques
     chats: [],
     notifySignIn: true,
     notifyDeplete: true,
+    notifyStatus: false,
+    statusEveryDays: 1,
+    statusSendTime: "00:00",
     ...overrides,
 });
 
@@ -115,6 +118,9 @@ describe("the Telegram bot's settings", () => {
             notifySignIn: false,
             // On until switched off, as the API starts it.
             notifyDeplete: true,
+            notifyStatus: false,
+            statusEveryDays: 1,
+            statusSendTime: "00:00",
         });
     });
 
@@ -129,6 +135,9 @@ describe("the Telegram bot's settings", () => {
             tgBotChatIds: "1,2",
             tgNotifySignIn: "true",
             tgNotifyDeplete: "true",
+            tgNotifyStatus: "false",
+            tgStatusEveryDays: "1",
+            tgStatusSendTime: "00:00",
         });
     });
 
@@ -140,6 +149,24 @@ describe("the Telegram bot's settings", () => {
         expect(telegramRequest.safeParse(buildTelegram({ chats: ["@channel"] })).success).toBe(
             false,
         );
+    });
+
+    it("rejects invalid calendar intervals and clock times", () => {
+        for (const statusEveryDays of [0, -1, 1.5, 36501, Number.NaN]) {
+            expect(telegramRequest.safeParse(buildTelegram({ statusEveryDays })).success).toBe(
+                false,
+            );
+        }
+        for (const statusSendTime of ["", "24:00", "00:60", "9:00", "09:00:00"]) {
+            expect(telegramRequest.safeParse(buildTelegram({ statusSendTime })).success).toBe(
+                false,
+            );
+        }
+        expect(
+            telegramRequest.safeParse(
+                buildTelegram({ statusEveryDays: 3, statusSendTime: "23:59" }),
+            ).success,
+        ).toBe(true);
     });
 
     it("are not switched on with nothing to send with or nowhere to send to", () => {
