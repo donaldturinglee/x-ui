@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/donaldturinglee/x-ui/internal/agent"
@@ -100,27 +99,11 @@ func localCoreAgent() (*agent.Config, error) {
 }
 
 func (systemdCoreHost) Info(ctx context.Context) (coreSnapshot, error) {
-	command := exec.CommandContext(ctx, "systemctl", "show", "sing-box.service", "--property=LoadState", "--property=ActiveState", "--property=MainPID", "--property=ExecStart", "--property=WorkingDirectory", "--property=ExecMainStartTimestampMonotonic")
-	output, err := command.Output()
+	snapshot, values, err := readCoreSystemdSnapshot(ctx, runCoreStatusCommand)
 	if err != nil {
 		return coreSnapshot{}, err
 	}
-	values := make(map[string]string)
-	for _, line := range strings.Split(string(output), "\n") {
-		key, value, _ := strings.Cut(line, "=")
-		values[key] = value
-	}
-	pid, _ := strconv.Atoi(values["MainPID"])
-	started, _ := strconv.ParseInt(values["ExecMainStartTimestampMonotonic"], 10, 64)
-	snapshot := coreSnapshot{CoreStatus: CoreStatus{State: values["ActiveState"], PID: pid}, StartedMicro: started}
-	if snapshot.State == "" {
-		snapshot.State = "unknown"
-	}
-	if pid > 0 && started > 0 {
-		snapshot.UptimeSeconds = max(0, (coreMonotonicMicro()-started)/1_000_000)
-	}
 	if values["LoadState"] != "loaded" {
-		snapshot.Reason = "A local sing-box systemd service is not installed."
 		return snapshot, nil
 	}
 	snapshot.Launch, err = parseCoreLaunch(values["ExecStart"], values["WorkingDirectory"])

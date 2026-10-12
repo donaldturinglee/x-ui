@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +121,58 @@ func TestTelegramPublicIPValidationCachingAndCancellation(t *testing.T) {
 	started := time.Now()
 	if ip.read(ctx) != "" || time.Since(started) > time.Second {
 		t.Fatal("IP lookup ignored cancellation")
+	}
+}
+
+func TestTelegramPublicIPReportsOnlyPublicIPv4(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply string
+		want  string
+	}{
+		{name: "public IPv4", reply: `{"ip":"203.0.113.7"}`, want: "203.0.113.7"},
+		{name: "IPv4 mapped address", reply: `{"ip":"::ffff:203.0.113.7"}`, want: "203.0.113.7"},
+		{name: "public IPv6", reply: `{"ip":"2406:da18:10ff:d000:2d96:c9b5:dc5e:484b"}`},
+		{name: "private IPv4", reply: `{"ip":"10.0.0.1"}`},
+		{name: "loopback IPv4", reply: `{"ip":"127.0.0.1"}`},
+		{name: "invalid address", reply: `{"ip":"not-an-ip"}`},
+		{name: "invalid JSON", reply: `not-json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.reply))
+			}))
+			defer server.Close()
+			ip := newTelegramPublicIP()
+			if ip.endpoint != "https://api.ipify.org?format=json" {
+				t.Fatalf("IPv4 discovery endpoint = %q", ip.endpoint)
+			}
+			ip.endpoint = server.URL
+			defer ip.client.CloseIdleConnections()
+			if got := ip.read(context.Background()); got != tc.want {
+				t.Fatalf("public IPv4 = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTelegramPublicIPTransportRequiresIPv4(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("IPv6 loopback is unavailable", err)
+	}
+	defer listener.Close()
+	ip := newTelegramPublicIP()
+	defer ip.client.CloseIdleConnections()
+	transport := ip.client.Transport.(*http.Transport)
+	if transport.Proxy != nil {
+		t.Fatal("public IPv4 discovery inherited a proxy")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if connection, err := transport.DialContext(ctx, "tcp", listener.Addr().String()); err == nil {
+		connection.Close()
+		t.Fatal("public IPv4 discovery connected over IPv6")
 	}
 }
 

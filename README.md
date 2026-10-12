@@ -251,11 +251,14 @@ capabilities. Commands respond only to configured private chat IDs. The worker
 uses long polling, so the bot must not have an active webhook; no incoming
 HTTP endpoint is required.
 
-Send `/status` for the worker host's public IP, x-ui and local sing-box versions,
+Send `/status` for the worker host's public IPv4, x-ui and local sing-box versions,
 host uptime and memory, recently active clients, cumulative network traffic,
 local core state, and the collection `DateTime`. Unavailable readings show
 `N/A`, and an unreadable core state shows `unknown`. Public IP discovery uses
-[ipify](https://www.ipify.org/) with a two-second timeout and a 30-minute cache.
+[ipify](https://www.ipify.org/) over IPv4 with a two-second timeout and a 30-minute
+cache. Without working IPv4 connectivity, the IP line is `N/A`. Core readings are
+independent of restart permissions and include installed prerelease versions.
+If the version cannot be read, an available service state is still reported.
 Online clients are those with traffic in the last five minutes; network traffic
 is the host's cumulative sent and received bytes, including other programs.
 

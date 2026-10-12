@@ -1592,18 +1592,25 @@ requests can be canceled. Delivery and the database checkpoint cannot be made
 atomic: a crash between them or an ambiguous failed send may repeat a reply.
 
 `TelegramStatusService` collects a snapshot for `/status` and the scheduled
-report. Its nine lines are IP, x-ui version, local sing-box version, host uptime,
-host memory, recently active client count, cumulative host network traffic,
-local sing-box state, and `DateTime`. The readings reuse `SystemService`,
-`CoreService`, and `StatsService`; the latter's online window remains five
-minutes. Host uptime is calculated from boot time, not API or worker process
-uptime. Local systemd state `active` maps to `running`. Unsupported core probes
+report. Its nine lines are public IPv4, x-ui version, local sing-box version,
+host uptime, host memory, recently active client count, cumulative host network
+traffic, local sing-box state, and `DateTime`. The readings reuse `SystemService`,
+the read-only `CoreStatusReader`, and `StatsService`; the latter's online window
+remains five minutes. Host uptime is calculated from boot time, not API or worker
+process uptime. Local systemd state `active` maps to `running`. Unsupported core probes
 show `unknown`, and missing metrics show `N/A` rather than zero. Byte formatting
 uses 1024-based units and two decimal places. Collection runs concurrently with
-a five-second deadline. Public IP lookup goes directly to `api64.ipify.org`
-over HTTPS, times out after two seconds, validates the returned address, caches
-success for 30 minutes and failure for one minute, and runs only when a status
-report is requested. Without that endpoint, the IP line is `N/A`.
+a five-second deadline. The worker's core reader has a four-second deadline and
+does not use the API process-identity or restart-capability checks. It reads the
+fixed `sing-box.service` properties and runs `version` only on its actual
+`/usr/bin/sing-box` or `/usr/local/bin/sing-box` executable. Reading versions does
+not depend on the service's restart arguments or managed agent; prereleases can
+be displayed while version-management eligibility still requires a stable build.
+Failure to read a version preserves an already collected service state.
+Public IP lookup goes directly to `api.ipify.org` over IPv4 HTTPS, times out after
+two seconds, validates a public IPv4 address, caches success for 30 minutes and
+failure for one minute, and runs only when a status report is requested. Without
+working IPv4 connectivity to that endpoint, the IP line is `N/A`.
 
 The Telegram settings form adds `tgNotifyStatus` (default false),
 `tgStatusEveryDays` (default 1; 1–36500 whole days), and `tgStatusSendTime`

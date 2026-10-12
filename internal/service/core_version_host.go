@@ -23,11 +23,18 @@ type systemdCoreVersionHost struct{}
 
 func coreExecutableVersion(ctx context.Context, executable string) (string, error) {
 	output, err := exec.CommandContext(ctx, executable, "version").Output()
-	fields := strings.Fields(strings.SplitN(string(output), "\n", 2)[0])
-	if err != nil || len(fields) != 3 || fields[0] != "sing-box" || fields[1] != "version" || !stableVersion.MatchString(fields[2]) {
+	if err != nil {
 		return "", fmt.Errorf("The installed sing-box version is not a supported stable build")
 	}
-	return strings.TrimPrefix(fields[2], "v"), nil
+	return parseManagedCoreVersion(output)
+}
+
+func parseManagedCoreVersion(output []byte) (string, error) {
+	version, err := parseCoreReportedVersion(output)
+	if err != nil || !stableVersion.MatchString(version) {
+		return "", fmt.Errorf("The installed sing-box version is not a supported stable build")
+	}
+	return version, nil
 }
 
 func (systemdCoreVersionHost) Info(ctx context.Context) (coreVersionInfo, error) {

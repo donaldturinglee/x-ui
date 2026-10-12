@@ -44,13 +44,11 @@ type TelegramStatusService struct {
 	now      func() time.Time
 }
 
-func NewTelegramStatusService(system *SystemService, core *CoreService, stats *StatsService, location *time.Location) *TelegramStatusService {
+func NewTelegramStatusService(system *SystemService, core *CoreStatusReader, stats *StatsService, location *time.Location) *TelegramStatusService {
 	if location == nil {
 		location = time.UTC
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil // Report this host's address rather than an HTTP proxy's.
-	ip := &telegramPublicIP{client: &http.Client{Transport: transport, Timeout: 2 * time.Second}, endpoint: "https://api64.ipify.org?format=json"}
+	ip := newTelegramPublicIP()
 	s := &TelegramStatusService{location: location, publicIP: ip.read, now: time.Now}
 	if system != nil {
 		s.system = system
@@ -193,6 +191,16 @@ type telegramPublicIP struct {
 	expires  time.Time
 }
 
+func newTelegramPublicIP() *telegramPublicIP {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil // Report this host's address rather than an HTTP proxy's.
+	dialer := &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", address)
+	}
+	return &telegramPublicIP{client: &http.Client{Transport: transport, Timeout: 2 * time.Second}, endpoint: "https://api.ipify.org?format=json"}
+}
+
 func (p *telegramPublicIP) read(ctx context.Context) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -211,7 +219,7 @@ func (p *telegramPublicIP) read(ctx context.Context) string {
 				IP string `json:"ip"`
 			}
 			if response.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(response.Body, 1024)).Decode(&reply) == nil {
-				if ip := net.ParseIP(reply.IP); ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() {
+				if ip := net.ParseIP(reply.IP); ip != nil && ip.To4() != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() {
 					value = ip.String()
 				}
 			}

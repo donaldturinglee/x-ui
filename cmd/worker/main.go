@@ -84,7 +84,7 @@ func run() error {
 	users := service.NewUserService(store)
 	telegram := service.NewTelegramService(settings)
 	stats := service.NewStatsService(store, cfg.Worker.StatsBucket.Duration(), cfg.Worker.StatsRetention.Duration())
-	status := service.NewTelegramStatusService(service.NewSystemService(store, settings), service.NewCoreService(settings), stats, location)
+	status := service.NewTelegramStatusService(service.NewSystemService(store, settings), service.NewCoreStatusReader(), stats, location)
 
 	// Recover: robfig/cron does not recover panics, and one panicking job would
 	// otherwise take the whole worker down with it.
