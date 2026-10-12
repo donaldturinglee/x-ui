@@ -578,15 +578,21 @@ read off the subscribers: the API answers a listener without them, and a listing
 longer than one read holds gives a count that is only how many there are at
 least, which the card says with a plus.
 
-The outbounds page is the same grid of the same cards, which are written once in
-`src/components` for every page that lists tagged objects: where a route sends
-traffic, whether it wraps it in TLS, whether anything has gone out through it
-lately, and edit, delete and the traffic chart along the foot. The reference also
-measures how long each far end takes to answer, one at a time or all at once, and
-imports a batch of routes from links; the panel runs no proxy core to measure
-with and the API takes routes one at a time, so neither is offered.
+The outbounds page lists one route per table row: its tag, type, server address,
+port, TLS state, recent traffic activity, delay and actions. The add and Test all
+buttons sit above the table. Tag, type and measured delay can be sorted locally;
+failed, unmeasured and inapplicable delays stay after successful measurements.
+The API's configuration order is preserved. Connectivity checks use the existing
+local core API, at most four at once; a batch freezes the visible row order until
+it finishes. Block routes are skipped. Recent traffic activity and successful
+connectivity checks are separate readings. A failure exposes its reason on hover,
+focus or in a dialog opened by clicking it. Delete opens a modal confirmation and
+keeps the protection against removing the final outbound. Below 840 pixels rows
+become compact vertical lists with a sort selector, a visible check button and
+edit, traffic and delete in a menu. Long tags and addresses can be inspected in a
+dialog. The panel's API takes routes one at a time.
 
-A route out through WireGuard is one of the cards, as it is one of the outbounds
+A route out through WireGuard is one of the rows, as it is one of the outbounds
 the API keeps, and says where it sends the way the rest do: its server and port
 are its peer's, the far end of the tunnel. The core runs it as an endpoint and
 reports its traffic under its tag as it reports a route out's, so the chart and

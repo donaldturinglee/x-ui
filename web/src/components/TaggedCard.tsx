@@ -14,7 +14,7 @@ import {
 import type { IconProps } from "@gamecrafters/base-ui-icons";
 import { useEffect, useId, useRef, type ComponentType, type ReactNode, type Ref } from "react";
 
-// Listeners, routes out, and a node's DNS servers and
+// Listeners and a node's DNS servers and
 // rules, are all drawn the reference's way: a grid of cards, each one tag -- or a
 // name, or a rule's place in the order -- with its kind under it, a few facts
 // about it and a row of what can be done to it along its foot. The pieces are

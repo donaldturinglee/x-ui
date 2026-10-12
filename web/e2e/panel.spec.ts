@@ -585,23 +585,22 @@ test.describe("the panel", () => {
 
         await page.goto("/outbounds");
 
-        const routes = page.getByRole("list", { name: "Routes out" });
-        const card = (tag: string) =>
-            routes.getByRole("listitem").filter({
-                has: page.getByRole("heading", { name: tag, exact: true }),
+        const routes = page.getByRole("table", { name: "Routes out" });
+        const row = (tag: string) =>
+            routes.getByRole("row").filter({
+                has: page.getByRole("cell", { name: tag, exact: true }),
             });
-        const value = (tag: string, term: string) =>
-            card(tag).locator("dt", { hasText: term }).locator("xpath=following-sibling::dd[1]");
+        const value = (tag: string, term: string) => row(tag).locator(`[data-column="${term}"]`);
 
         // Where it sends traffic is read off the options the core stores rather
         // than a field of its own.
-        await expect(value("upstream", "Address")).toHaveText("10.0.0.2");
-        await expect(value("upstream", "Port")).toHaveText("1080");
+        await expect(value("upstream", "Address").getByRole("button")).toHaveText("10.0.0.2");
+        await expect(value("upstream", "Port")).toHaveText("1080", { useInnerText: true });
         // A direct outbound decides an outcome on the node, so it has no address.
         await expect(value("out", "Address")).toHaveText("—");
     });
 
-    test("lays the routes out as cards six across on a wide screen", async ({ page }) => {
+    test("lays the routes out one per table row on a wide screen", async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         await mockApi(page, {
             signedIn: true,
@@ -617,21 +616,35 @@ test.describe("the panel", () => {
 
         await page.goto("/outbounds");
 
-        const routes = page.getByRole("list", { name: "Routes out" });
-        const cards = routes.getByRole("listitem");
+        const routes = page.getByRole("table", { name: "Routes out" });
+        const rows = routes.locator("tbody tr");
 
-        await expect(cards).toHaveCount(7);
+        await expect(rows).toHaveCount(7);
+        await expect(routes.getByRole("columnheader")).toHaveText([
+            "Tag",
+            "Type",
+            "Address",
+            "Port",
+            "TLS",
+            "Online",
+            "Delay",
+            "Actions",
+        ]);
 
         const boxes = await Promise.all(
-            (await cards.all()).map(async (card) => (await card.boundingBox())!),
+            (await rows.all()).map(async (row) => (await row.boundingBox())!),
         );
 
-        // The same grid as the listeners': six to a row, the seventh starting
-        // the next one, and the add/check actions centred together over them.
-        expect(new Set(boxes.slice(0, 6).map((box) => box.y)).size).toBe(1);
-        expect(boxes[6].x).toBe(boxes[0].x);
+        // Each route spans the same table width on a row of its own.
+        expect(new Set(boxes.map((box) => box.x)).size).toBe(1);
+        expect(new Set(boxes.map((box) => box.width)).size).toBe(1);
+        for (let index = 1; index < boxes.length; index++) {
+            expect(boxes[index].y).toBeGreaterThanOrEqual(
+                boxes[index - 1].y + boxes[index - 1].height - 1,
+            );
+        }
 
-        const grid = (await routes.boundingBox())!;
+        const table = (await routes.boundingBox())!;
         const add = (await page.getByRole("button", { name: "Add Outbound" }).boundingBox())!;
         const testAll = (await page
             .getByRole("button", { name: "Test all", exact: true })
@@ -640,10 +653,10 @@ test.describe("the panel", () => {
         expect(testAll.y).toBe(add.y);
         expect(testAll.x).toBeGreaterThan(add.x + add.width);
         const actionsMiddle = (add.x + testAll.x + testAll.width) / 2;
-        expect(Math.abs(actionsMiddle - (grid.x + grid.width / 2))).toBeLessThan(1);
+        expect(Math.abs(actionsMiddle - (table.x + table.width / 2))).toBeLessThan(1);
     });
 
-    test("deletes a route out once asked on its card", async ({ page }) => {
+    test("deletes a route out after its modal confirmation", async ({ page }) => {
         const state: ApiState = { signedIn: true, maintenance: false };
 
         await mockApi(page, state);
@@ -651,17 +664,13 @@ test.describe("the panel", () => {
         await page.goto("/outbounds");
         await page.getByLabel("Delete upstream").click();
 
-        const question = page
-            .getByRole("list", { name: "Routes out" })
-            .getByRole("listitem")
-            .filter({ hasText: "upstream" })
-            .getByRole("alertdialog", { name: "Delete" });
+        const question = page.getByRole("alertdialog", { name: "Delete", exact: true });
 
         // What it costs a route rule is said before it is done.
         await expect(question).toContainText("nowhere to send");
         await question.getByRole("button", { name: "Yes" }).click();
 
-        await expect(page.getByRole("heading", { name: "upstream" })).toBeHidden();
+        await expect(page.getByRole("cell", { name: "upstream", exact: true })).toBeHidden();
         expect(state.outbounds?.map((outbound) => outbound.tag)).toEqual(["out"]);
     });
 
@@ -1598,10 +1607,10 @@ test.describe("the panel", () => {
         await expect(dialog.getByLabel("Options")).toHaveCount(0);
         await dialog.getByRole("button", { name: "Save" }).click();
 
-        const routes = page.getByRole("list", { name: "Routes out" });
+        const routes = page.getByRole("table", { name: "Routes out" });
 
-        await expect(routes.getByRole("heading", { name: "hop", exact: true })).toBeVisible();
-        await expect(routes.getByText("10.9.0.1")).toBeVisible();
+        await expect(routes.getByRole("cell", { name: "hop", exact: true })).toBeVisible();
+        await expect(routes.getByRole("button", { name: "10.9.0.1", exact: true })).toBeVisible();
         expect(state.outbounds?.find((outbound) => outbound.tag === "hop")).toEqual({
             id: 3,
             type: "socks",
@@ -1875,7 +1884,7 @@ test.describe("the panel", () => {
 
         await expect(dialog).toBeHidden();
         await expect(
-            page.getByRole("heading", { name: "upstream-renamed", exact: true }),
+            page.getByRole("cell", { name: "upstream-renamed", exact: true }),
         ).toBeVisible();
         expect(state.outbounds?.[1]).toEqual({
             id: 2,
@@ -1969,16 +1978,14 @@ test.describe("the panel", () => {
             tag: "blocked",
         });
 
-        // It sends traffic nowhere, so its card has nowhere to show.
-        const card = page
-            .getByRole("list", { name: "Routes out" })
-            .getByRole("listitem")
-            .filter({ has: page.getByRole("heading", { name: "blocked", exact: true }) });
+        // It sends traffic nowhere, so its row has no server address.
+        const row = page
+            .getByRole("table", { name: "Routes out" })
+            .getByRole("row")
+            .filter({ has: page.getByRole("cell", { name: "blocked", exact: true }) });
 
-        await expect(card).toContainText("block");
-        await expect(
-            card.locator("dt", { hasText: "Address" }).locator("xpath=following-sibling::dd[1]"),
-        ).toHaveText("—");
+        await expect(row).toContainText("block");
+        await expect(row.locator('[data-column="Address"]')).toHaveText("—");
     });
 
     test("saves a block route written elsewhere as its type and tag alone", async ({ page }) => {
@@ -2140,7 +2147,7 @@ test.describe("the panel", () => {
 
         await page.goto("/outbounds");
 
-        const routes = page.getByRole("list", { name: "Routes out" });
+        const routes = page.getByRole("table", { name: "Routes out" });
 
         await page.getByLabel("Edit wg0").click();
 
@@ -2188,7 +2195,7 @@ test.describe("the panel", () => {
             .getByRole("button", { name: "Yes" })
             .click();
 
-        await expect(routes.getByRole("heading", { name: "wg0", exact: true })).toHaveCount(0);
+        await expect(routes.getByRole("cell", { name: "wg0", exact: true })).toHaveCount(0);
         expect(state.outbounds?.map((outbound) => outbound.tag)).toEqual(["out"]);
     });
 
