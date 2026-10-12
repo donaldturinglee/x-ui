@@ -15,6 +15,8 @@ type ClientFilter struct {
 	Group string
 	// Search matches the name or description, case-insensitively.
 	Search string
+	// NameSearch matches only names and treats SQL wildcard characters literally.
+	NameSearch string
 	// Enabled, when set, restricts to enabled or disabled clients.
 	Enabled *bool
 	// Limit of 0 means no limit.
@@ -51,6 +53,9 @@ func filtered(query *gorm.DB, filter ClientFilter) *gorm.DB {
 		// should not have to reproduce its capitalisation.
 		pattern := "%" + filter.Search + "%"
 		query = query.Where("name ILIKE ? OR description ILIKE ?", pattern, pattern)
+	}
+	if filter.NameSearch != "" {
+		query = query.Where("name ILIKE ? ESCAPE '!'", literalContainsPattern(filter.NameSearch))
 	}
 	if filter.Enabled != nil {
 		query = query.Where("enable = ?", *filter.Enabled)

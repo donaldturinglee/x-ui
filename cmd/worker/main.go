@@ -85,6 +85,9 @@ func run() error {
 	telegram := service.NewTelegramService(settings)
 	stats := service.NewStatsService(store, cfg.Worker.StatsBucket.Duration(), cfg.Worker.StatsRetention.Duration())
 	status := service.NewTelegramStatusService(service.NewSystemService(store, settings), service.NewCoreStatusReader(), stats, location)
+	outbounds := service.NewOutboundService(store)
+	coreConfig := service.NewConfigService(store, settings, service.NewInboundService(store), outbounds)
+	resources := service.NewTelegramResourceService(clients, outbounds, coreConfig, location)
 
 	// Recover: robfig/cron does not recover panics, and one panicking job would
 	// otherwise take the whole worker down with it.
@@ -171,7 +174,7 @@ func run() error {
 	commandsDone := make(chan struct{})
 	go func() {
 		defer close(commandsDone)
-		service.NewTelegramCommandService(settings, telegram, status).Run(commandCtx)
+		service.NewTelegramCommandService(settings, telegram, status).WithResources(resources).Run(commandCtx)
 	}()
 	statusDone := make(chan struct{})
 	go func() {

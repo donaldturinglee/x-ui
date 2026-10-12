@@ -487,7 +487,7 @@ signed-in operator.
   theirs is on.
 - **Telegram Bot** is the bot's token and chats, whether it sends at all, and
   which events it sends about; *Send a test message* tries the bot as it is
-  saved. The same main switch enables private `/help` commands in the worker.
+  saved. The same main switch enables private bot commands in the worker.
   See [Notifications](#notifications).
 - **Sing Box** is the configuration every node fetches (`GET /config`),
   assembled now and shown read-only, to copy or to download for a node set up by
@@ -1567,15 +1567,17 @@ own, and the bot as a whole (`tgBotEnable`, `tgNotifySignIn`,
 are ids, negative for a group.
 
 Each notification is one `sendMessage` request to the Bot API, made when the
-event happens. The worker also receives private `/help` and `/status` commands using
+event happens. The worker also receives private `/start`, `/help`, `/status`,
+`/client`, `/outbound` and `/rule` commands using
 `getUpdates` with a 30-second long poll and a separate 40-second HTTP timeout.
 Bot delivery needs outbound HTTPS access to `api.telegram.org`; no public
 webhook endpoint or extra bot process is required. An existing webhook is
 reported as a conflict and is never deleted automatically.
 
 The command menu is registered for private chats. Replies go only to the chat
-that requested the command, and only when that private chat ID is configured. Groups,
-other commands and unsupported updates are consumed without replies. Commands
+that requested the command, and only when that private chat ID is configured
+and the sender is that private-chat user. Groups, other command roots and
+unsupported updates are consumed without replies. Commands
 depend on `tgBotEnable`, independently of the notification event switches.
 The worker checks configuration every five seconds and cancels and joins the
 old consumer before applying a new token or chat list. It rechecks permissions
@@ -1590,6 +1592,44 @@ checkpoint is retried without resending the reply. Network failures use bounded
 exponential backoff, Telegram's `retry_after` is respected, and all waits and
 requests can be canceled. Delivery and the database checkpoint cannot be made
 atomic: a crash between them or an ambiguous failed send may repeat a reply.
+
+Resource roots use singular names. A root lists ten items; `retrieve` gets
+one exact ID, `name:` or `tag:` match, and `search` returns a paged selection
+list even for a single result. Client search is name-only, outbound search is
+tag-only, and both escape SQL pattern characters for literal case-insensitive
+contains matching. Their lists use ID order and omit stored credentials.
+Client details show enabled state separately from last traffic, with quota
+and expiry in the applied worker time zone. Outbound details can show the
+requesting user's recent completed check and its timestamp, matching the
+outbound ID, tag and type. Rule search uses redacted stored
+JSON condition/action content, not a routing simulation. Rule positions are
+one-based and preserve matching order; long JSON details are paged.
+
+`TelegramResourceService` exposes a read-only adapter to client, outbound and
+base-config services. It provides no mutation commands. Button data is a short
+random token backed by a consumer-local map, bound to bot ID, sender, private
+chat and message ID. The map expires entries after ten minutes and retains at
+most 2048. `callback_query` updates are polled and acknowledged before resource
+queries. Permissions are checked before collection and again before delivery,
+including retries. Detail navigation keeps the originating query and page.
+Rule buttons carry the base-config hash, original position and rule hash;
+changed configuration requires an explicit refreshed list. A worker restart
+or bot-settings change discards the session and expires its old buttons.
+
+`/outbound check <id|all>` sends a new progress message, then starts one
+background job per consumer. It reuses the local outbound checker with up to
+four probe callers, skips block routes, limits a batch to 1000 outbounds and
+five minutes, and reports results in pages of ten. Progress edits are throttled
+to once per second; final edits retry the completed snapshot rather than
+rerunning probes. At most eight result snapshots are retained for ten minutes,
+bound to their original owner and progress message. Polling and ordinary
+commands continue during probes. Settings changes and shutdown cancel and
+join the job callers; any shared local checker probe remains bounded by its
+existing 17-second timeout. These checks describe the worker's local server,
+require its local agent/core and applied Clash API configuration, and may
+update sing-box delay history or urltest selection. They do not change panel
+configuration. Initial reply and checkpoint retries do not start extra jobs;
+an ambiguous send or process crash still has the delivery limitation above.
 
 `TelegramStatusService` collects a snapshot for `/status` and the scheduled
 report. Its nine lines are public IPv4, x-ui version, local sing-box version,
@@ -1673,7 +1713,13 @@ handling and validation, the two-factor codes against RFC 6238's own test
 vectors, and the Telegram notifier and command receiver against a stand-in for
 the Bot API — nothing in the suite reaches Telegram. Command tests cover private
 chat permissions, saved-setting changes, cancellation, persisted cursors, retries
-and token redaction. Status tests cover report formatting, unavailable readings,
+and token redaction. Resource tests cover exact and numeric-name retrieval,
+search selection and back navigation, message/owner binding and expiry, changed
+rule revisions, credential redaction and long JSON pagination. Background-check
+tests cover bounded concurrency, skipped routes, continued status replies,
+retries without duplicate queries/probes, revocation and shutdown. Repository
+dry-run tests verify literal filters, count/page consistency and safe selected
+columns without a database. Status tests cover report formatting, unavailable readings,
 IP caching and cancellation, midnight and calendar-day scheduling, DST, restart
 recovery, saved-policy changes, and per-chat delivery/checkpoint failures.
 Telegram and IP discovery use local HTTP stand-ins. Fixtures live in `test/data/`.
@@ -1681,7 +1727,8 @@ Telegram and IP discovery use local HTTP stand-ins. Fixtures live in `test/data/
 That is the whole suite, and the compose file brings up one database rather than
 two. What real SQL would exercise — upsert accumulation, the chunked purge,
 transaction rollback — is not covered, and is worth knowing when changing a
-repository: the layering above it is tested, the queries themselves are not.
+repository: SQL generation can be checked without a database, but executing
+those queries requires the opt-in PostgreSQL integration tests.
 Adding that back means a database the suite may truncate, which is not the one
 being developed against.
 

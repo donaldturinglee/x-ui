@@ -62,8 +62,8 @@ configuration and report traffic. The proxy core carries the traffic.
 Key features:
 
 - Operator accounts, two-factor authentication and API tokens.
-- Telegram notifications, private `/help` and `/status` commands, and scheduled
-  server status reports through the worker.
+- Telegram notifications, private resource commands and connection checks,
+  and scheduled server status reports through the worker.
 - Subscriber management, subscription links, traffic quotas and expiry.
 - A React panel served by the Go API, with separate panel and subscription listeners.
 - sing-box node configuration, synchronization and authenticated native statistics.
@@ -246,10 +246,52 @@ lists the available commands.
 
 In **Settings → Telegram Bot**, save a dedicated bot's token and your private
 chat ID, then turn on **Enable Telegram Bot**. With one `x-ui-worker` running,
-send `/help` in that bot's private chat to see its commands and notification
+send `/start` for its resource menu or `/help` to see commands and notification
 capabilities. Commands respond only to configured private chat IDs. The worker
 uses long polling, so the bot must not have an active webhook; no incoming
 HTTP endpoint is required.
+
+The resource commands use singular names. `/client`, `/outbound` and `/rule`
+show lists of ten items with detail, previous/next, refresh and back buttons.
+Clients and outbounds are ordered by database ID; rules keep their matching
+order and positions start at 1.
+
+| Command | Meaning |
+| --- | --- |
+| `/client retrieve 123` | Get the client with database ID 123. |
+| `/client retrieve name:Alice Smith` | Get the client with this exact name. |
+| `/client search alice` | Search client names, ignoring case. |
+| `/outbound retrieve 12` | Get the outbound with database ID 12. |
+| `/outbound retrieve tag:hk-main` | Get the outbound with this exact tag. |
+| `/outbound search hk` | Search outbound tags, ignoring case. |
+| `/rule retrieve 3` | Get the rule at current position 3. |
+| `/rule search example.com` | Search rule conditions and actions. |
+| `/outbound check 12` | Check this outbound on the worker's server. |
+| `/outbound check all` | Check all outbounds on the worker's server. |
+
+`retrieve` returns one exact match; `search` always returns a selection list,
+even for one result. Use `name:123` or `tag:123` for numeric names or tags.
+Search treats `%`, `_` and `!` as ordinary text. Rule search looks at stored
+configuration and does not simulate routing. Returning from a detail keeps
+the search and page. Client details distinguish enablement from last traffic,
+show quota and expiry in the worker's time zone, and omit credentials.
+Outbound details include the requesting user's recent bot check and its time;
+outbound options are omitted. Secret fields in rule JSON are redacted and
+long details are paged. These commands leave configuration and client data
+unchanged.
+
+Buttons belong to the requesting bot, user, private chat and message. They
+expire after ten minutes or a worker/bot-settings restart. A changed rule
+configuration requires refreshing its list before an old selection can be used.
+Connection checks run in the background, so other commands remain available.
+Each bot runs one check batch, with up to four simultaneous probes and a
+five-minute batch deadline; `check all` supports up to 1000 outbounds.
+Block outbounds are skipped. Results have their own message and paged list,
+and stay available for ten minutes. Checks require a local agent and sing-box
+with Clash API enabled, as described below; they do not test remote nodes.
+Clash checks update core delay history and can affect urltest selection.
+Disabling the bot, changing its settings or stopping the worker cancels its
+pending checks.
 
 Send `/status` for the worker host's public IPv4, x-ui and local sing-box versions,
 host uptime and memory, recently active clients, cumulative network traffic,

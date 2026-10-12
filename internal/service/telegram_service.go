@@ -131,6 +131,7 @@ type telegramReply struct {
 type telegramAPIError struct {
 	err        error
 	retryAfter time.Duration
+	statusCode int
 }
 
 func (e *telegramAPIError) Error() string { return e.err.Error() }

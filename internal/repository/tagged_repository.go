@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"github.com/donaldturinglee/x-ui/internal/database"
 	"github.com/donaldturinglee/x-ui/internal/domain"
@@ -107,4 +108,33 @@ func (r *taggedRepository[T]) Delete(ctx context.Context, id uint) error {
 // them.
 type OutboundRepository struct {
 	taggedRepository[domain.Outbound]
+}
+
+func literalContainsPattern(value string) string {
+	return "%" + strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(value) + "%"
+}
+
+// ListSummaries pages outbound metadata without fetching credentials or options.
+// A zero limit lists all matching metadata.
+func (r *OutboundRepository) ListSummaries(ctx context.Context, search string, limit, offset int) ([]domain.Outbound, int64, error) {
+	query := r.db.WithContext(ctx).Model(&domain.Outbound{})
+	if search != "" {
+		query = query.Where("tag ILIKE ? ESCAPE '!'", literalContainsPattern(search))
+	}
+	var count int64
+	if err := query.Session(&gorm.Session{}).Count(&count).Error; err != nil {
+		return nil, 0, err
+	}
+	var records []domain.Outbound
+	query = query.Select("id", "type", "tag").Order("id ASC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
+	if err := query.Find(&records).Error; err != nil {
+		return nil, 0, err
+	}
+	return records, count, nil
 }

@@ -22,8 +22,22 @@ const telegramPollSeconds = 30
 const telegramHelpMessage = `x-ui Telegram Bot
 
 Available commands:
+/start - Show the resource menu
 /help - Show this help message
 /status - Show server status
+/client - List clients
+/client retrieve <id|name:exact name> - Get one client
+/client search <name keyword> - Search client names
+/outbound - List outbounds
+/outbound retrieve <id|tag:exact tag> - Get one outbound
+/outbound search <tag keyword> - Search outbound tags
+/outbound check <id|all> - Check connections on this server
+/rule - List rules in matching order
+/rule retrieve <position> - Get one rule (positions start at 1)
+/rule search <keyword> - Search rule conditions and actions
+
+Use name: or tag: for numeric names and tags. Search always returns a list.
+Buttons expire after 10 minutes or a worker/settings restart.
 
 Notifications:
 - Successful panel sign-ins
@@ -56,6 +70,9 @@ type telegramBotUser struct {
 }
 
 type telegramCommandMessage struct {
+	ID   int64            `json:"message_id"`
+	Date int64            `json:"date"`
+	From *telegramBotUser `json:"from"`
 	Chat struct {
 		ID   int64  `json:"id"`
 		Type string `json:"type"`
@@ -63,12 +80,20 @@ type telegramCommandMessage struct {
 	Text string `json:"text"`
 }
 
-type telegramCommandUpdate struct {
-	ID      int64                   `json:"update_id"`
+type telegramCommandCallback struct {
+	ID      string                  `json:"id"`
+	From    *telegramBotUser        `json:"from"`
 	Message *telegramCommandMessage `json:"message"`
+	Data    string                  `json:"data"`
 }
 
-// TelegramCommandService receives private /help and /status commands. Each
+type telegramCommandUpdate struct {
+	ID       int64                    `json:"update_id"`
+	Message  *telegramCommandMessage  `json:"message"`
+	Callback *telegramCommandCallback `json:"callback_query"`
+}
+
+// TelegramCommandService receives authorized private resource commands. Each
 // token has one consumer; the API and worker can both keep sending notifications.
 type TelegramCommandService struct {
 	settings        telegramCommandSettings
@@ -77,6 +102,13 @@ type TelegramCommandService struct {
 	refreshInterval time.Duration
 	retryDelay      time.Duration
 	status          telegramStatusProvider
+	resources       *TelegramResourceService
+}
+
+// WithResources wires read-only resource access before Run starts.
+func (t *TelegramCommandService) WithResources(resources *TelegramResourceService) *TelegramCommandService {
+	t.resources = resources
+	return t
 }
 
 func NewTelegramCommandService(settings *SettingService, telegram *TelegramService, status ...telegramStatusProvider) *TelegramCommandService {
@@ -172,6 +204,9 @@ func (t *TelegramCommandService) configuration(ctx context.Context) (telegramCom
 }
 
 func (t *TelegramCommandService) consume(ctx context.Context, cfg telegramCommandConfig) {
+	jobCtx, cancelJobs := context.WithCancel(ctx)
+	session := newTelegramCommandSession(t.resources)
+	defer func() { cancelJobs(); session.workers.Wait() }()
 	var bot telegramBotUser
 	var cursor telegramUpdateCursor
 	if err := t.retry(ctx, cfg.token, func() error {
@@ -210,8 +245,15 @@ func (t *TelegramCommandService) consume(ctx context.Context, cfg telegramComman
 			}
 		}
 		return t.call(ctx, cfg.token, "setMyCommands", map[string]interface{}{
-			"commands": []map[string]string{{"command": "help", "description": "Show help"}, {"command": "status", "description": "Show server status"}},
-			"scope":    map[string]string{"type": "all_private_chats"},
+			"commands": []map[string]string{
+				{"command": "start", "description": "Show resource menu"},
+				{"command": "help", "description": "Show help"},
+				{"command": "status", "description": "Show server status"},
+				{"command": "client", "description": "List, retrieve or search clients"},
+				{"command": "outbound", "description": "List, retrieve, search or check outbounds"},
+				{"command": "rule", "description": "List, retrieve or search rules"},
+			},
+			"scope": map[string]string{"type": "all_private_chats"},
 		}, nil)
 	}); err != nil {
 		return
@@ -222,7 +264,7 @@ func (t *TelegramCommandService) consume(ctx context.Context, cfg telegramComman
 		if err := t.retry(ctx, cfg.token, func() error {
 			return t.call(ctx, cfg.token, "getUpdates", map[string]interface{}{
 				"offset": cursor.Offset, "timeout": telegramPollSeconds,
-				"allowed_updates": []string{"message"},
+				"allowed_updates": []string{"message", "callback_query"},
 			}, &updates)
 		}); err != nil {
 			return
@@ -231,42 +273,7 @@ func (t *TelegramCommandService) consume(ctx context.Context, cfg telegramComman
 			if update.ID < cursor.Offset {
 				continue
 			}
-			var reply string
-			if err := t.retry(ctx, cfg.token, func() error {
-				// Recheck before replying, including after a failed send. Revoking
-				// a chat or switching the bot off must stop queued replies too.
-				current, err := t.configuration(ctx)
-				if err != nil {
-					return err
-				}
-				if current != cfg {
-					return errTelegramCommandConfigChanged
-				}
-				command := cfg.allowedCommand(update.Message, bot.Username)
-				if command == "" {
-					return nil
-				}
-				if reply == "" {
-					reply = telegramHelpMessage
-					if command == "/status" {
-						if t.status != nil {
-							reply = t.status.Report(ctx).Text
-						} else {
-							reply = formatTelegramStatus(time.Now(), time.UTC, telegramStatusData{}).Text
-						}
-					}
-				}
-				// Collection can take seconds. Recheck authorization after it too.
-				current, err = t.configuration(ctx)
-				if err != nil {
-					return err
-				}
-				if current != cfg {
-					return errTelegramCommandConfigChanged
-				}
-				return t.telegram.sendOne(ctx, cfg.token,
-					strconv.FormatInt(update.Message.Chat.ID, 10), reply)
-			}); err != nil {
+			if err := t.handleUpdate(jobCtx, cfg, bot, session, update); err != nil {
 				return
 			}
 			cursor.Offset = update.ID + 1
@@ -280,7 +287,8 @@ func (t *TelegramCommandService) consume(ctx context.Context, cfg telegramComman
 }
 
 func (cfg telegramCommandConfig) allowedCommand(message *telegramCommandMessage, username string) string {
-	if message == nil || message.Chat.Type != "private" {
+	if message == nil || message.From == nil || message.From.IsBot || message.ID <= 0 ||
+		!cfg.allowedChat(message.Chat.ID, message.Chat.Type, message.From.ID) {
 		return ""
 	}
 	fields := strings.Fields(message.Text)
@@ -288,15 +296,23 @@ func (cfg telegramCommandConfig) allowedCommand(message *telegramCommandMessage,
 		return ""
 	}
 	command, mentioned, addressed := strings.Cut(fields[0], "@")
-	if (command != "/help" && command != "/status") || (addressed && !strings.EqualFold(mentioned, username)) {
+	if (command != "/start" && command != "/help" && command != "/status" && command != "/client" && command != "/outbound" && command != "/rule") ||
+		(addressed && !strings.EqualFold(mentioned, username)) {
 		return ""
 	}
+	return command
+}
+
+func (cfg telegramCommandConfig) allowedChat(chatID int64, kind string, userID int64) bool {
+	if kind != "private" || userID <= 0 || userID != chatID {
+		return false
+	}
 	for _, chat := range strings.Split(cfg.chats, ",") {
-		if id, err := strconv.ParseInt(chat, 10, 64); err == nil && id == message.Chat.ID {
-			return command
+		if id, err := strconv.ParseInt(chat, 10, 64); err == nil && id == chatID {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func (t *TelegramCommandService) saveCursor(ctx context.Context, cursor telegramUpdateCursor) error {
@@ -308,7 +324,8 @@ func (t *TelegramCommandService) saveCursor(ctx context.Context, cursor telegram
 }
 
 // call decodes the Bot API envelope and keeps the token-bearing request address
-// out of errors. Only getUpdates uses a long wait; replies use the notifier.
+// out of errors. Only getUpdates uses a long wait; other methods use the
+// notifier's shorter HTTP timeout.
 func (t *TelegramCommandService) call(ctx context.Context, token, method string, payload, result interface{}) error {
 	if payload == nil {
 		payload = struct{}{}
@@ -323,7 +340,11 @@ func (t *TelegramCommandService) call(ctx context.Context, token, method string,
 		return errors.New("the Telegram bot's token cannot be sent")
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := t.client.Do(request)
+	client := t.client
+	if method != "getUpdates" && t.telegram.client != nil {
+		client = t.telegram.client
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		var addressed *url.Error
 		if errors.As(err, &addressed) {
@@ -347,6 +368,7 @@ func (t *TelegramCommandService) call(ctx context.Context, token, method string,
 		return &telegramAPIError{
 			err:        domain.Invalidf("Telegram %s failed (status %d): %s", method, response.StatusCode, redactTelegramToken(reply.Description, token)),
 			retryAfter: time.Duration(reply.Parameters.RetryAfter) * time.Second,
+			statusCode: response.StatusCode,
 		}
 	}
 	if result != nil {
@@ -361,7 +383,7 @@ func (t *TelegramCommandService) retry(ctx context.Context, token string, operat
 	delay := t.retryDelay
 	for ctx.Err() == nil {
 		err := operation()
-		if err == nil || errors.Is(err, errTelegramCommandConfigChanged) {
+		if err == nil || errors.Is(err, errTelegramCommandConfigChanged) || errors.Is(err, errTelegramReplyUnavailable) {
 			return err
 		}
 		if ctx.Err() != nil {

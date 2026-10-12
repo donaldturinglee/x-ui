@@ -106,10 +106,15 @@ type commandBotAPI struct {
 	polls             chan commandAPIRequest
 	canceled          chan commandAPIRequest
 	sends             chan commandAPIRequest
+	edits             chan commandAPIRequest
+	acks              chan commandAPIRequest
 	requests          chan commandAPIRequest
 	webhook           string
 	failPolls         int
 	failSends         int
+	failEdits         int
+	failEditContains  string
+	messageID         int64
 	retryAfterSeconds int
 }
 
@@ -119,6 +124,7 @@ func newCommandBot(t *testing.T) *commandBotAPI {
 		updates: make(chan []telegramCommandUpdate, 20), polls: make(chan commandAPIRequest, 100),
 		canceled: make(chan commandAPIRequest, 100), sends: make(chan commandAPIRequest, 100),
 		requests: make(chan commandAPIRequest, 100),
+		edits:    make(chan commandAPIRequest, 100), acks: make(chan commandAPIRequest, 100),
 	}
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, method, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/bot"), "/")
@@ -139,6 +145,16 @@ func newCommandBot(t *testing.T) *commandBotAPI {
 		if method == "sendMessage" && b.failSends > 0 {
 			b.failSends--
 			fail = true
+		}
+		if method == "editMessageText" && b.failEdits > 0 &&
+			(b.failEditContains == "" || strings.Contains(fmt.Sprint(request.body["text"]), b.failEditContains)) {
+			b.failEdits--
+			fail = true
+		}
+		var messageID int64
+		if method == "sendMessage" && !fail {
+			b.messageID++
+			messageID = b.messageID
 		}
 		b.mu.Unlock()
 		b.requests <- request
@@ -170,7 +186,18 @@ func newCommandBot(t *testing.T) *commandBotAPI {
 				_, _ = w.Write([]byte(`{"ok":false,"description":"temporarily unavailable"}`))
 				return
 			}
-			writeResult(map[string]interface{}{"message_id": 1})
+			writeResult(map[string]interface{}{"message_id": messageID})
+		case "editMessageText":
+			b.edits <- request
+			if fail {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"ok":false,"description":"temporarily unavailable"}`))
+				return
+			}
+			writeResult(map[string]interface{}{"message_id": request.body["message_id"]})
+		case "answerCallbackQuery":
+			b.acks <- request
+			writeResult(true)
 		case "getUpdates":
 			b.polls <- request
 			if fail {
@@ -266,7 +293,7 @@ func awaitCommandCursor(t *testing.T, settings *commandMemorySettings, offset in
 }
 
 func commandUpdate(id, chat int64, kind, text string) telegramCommandUpdate {
-	message := &telegramCommandMessage{Text: text}
+	message := &telegramCommandMessage{ID: id + 1, Date: 1, From: &telegramBotUser{ID: chat}, Text: text}
 	message.Chat.ID, message.Chat.Type = chat, kind
 	return telegramCommandUpdate{ID: id, Message: message}
 }
@@ -276,7 +303,7 @@ func TestTelegramHelpRepliesOnlyToAllowedPrivateChats(t *testing.T) {
 	settings.change(map[string]string{domain.SettingTgBotChatIds: "0001111,2222,-100222"})
 	startTelegramCommands(t, settings, bot)
 	poll := awaitCommandPoll(t, bot, testBotToken, 0)
-	if poll.body["timeout"] != float64(30) || fmt.Sprint(poll.body["allowed_updates"]) != "[message]" {
+	if poll.body["timeout"] != float64(30) || fmt.Sprint(poll.body["allowed_updates"]) != "[message callback_query]" {
 		t.Errorf("poll = %v, want long polling for messages", poll.body)
 	}
 	menus := bot.called("setMyCommands")
