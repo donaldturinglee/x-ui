@@ -2243,21 +2243,43 @@ test.describe("the panel", () => {
             .locator("dt", { hasText: term })
             .locator("xpath=following-sibling::dd[1]");
 
-    test("shows a node's DNS servers and rules as cards", async ({ page }) => {
+    const dnsServerRow = (page: Page, tag: string) =>
+        page
+            .getByRole("table", { name: "DNS servers", exact: true })
+            .locator("tbody > tr")
+            .filter({ has: page.getByRole("button", { name: `Edit ${tag}`, exact: true }) });
+
+    const dnsServerValue = (page: Page, tag: string, column: string) =>
+        dnsServerRow(page, tag).locator(`[data-column="${column}"]`);
+
+    const dnsRuleRow = (page: Page, position: number) =>
+        page
+            .getByRole("table", { name: "DNS rules", exact: true })
+            .locator("tbody > tr")
+            .nth(position - 1);
+
+    const dnsRuleValue = (page: Page, position: number, column: string) =>
+        dnsRuleRow(page, position).locator(`[data-column="${column}"]`);
+
+    test("shows a node's DNS servers and rules as lists", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false, baseConfig: dnsConfig() });
 
         await page.goto("/dns");
 
-        await expect(cardValue(page, "DNS servers", "google", "Server")).toHaveText("8.8.8.8");
-        await expect(cardValue(page, "DNS servers", "cloudflare-dot", "TLS")).toHaveText("Enabled");
+        await expect(dnsServerValue(page, "google", "Server")).toHaveText("8.8.8.8", {
+            useInnerText: true,
+        });
+        await expect(dnsServerValue(page, "cloudflare-dot", "TLS")).toHaveText("Enabled", {
+            useInnerText: true,
+        });
         // Asked on the node itself, so there is nowhere it is asked at.
-        await expect(cardValue(page, "DNS servers", "local", "Port")).toHaveText("—");
+        await expect(dnsServerValue(page, "local", "Port")).toHaveText("—", { useInnerText: true });
 
         // A rule is known by where it stands in the order, and a logical one by
         // how many rules it combines.
-        await expect(namedCard(page, "DNS rules", "2")).toContainText("Logical (and)");
-        await expect(cardValue(page, "DNS rules", "2", "Rules")).toHaveText("2");
-        await expect(cardValue(page, "DNS rules", "2", "Invert")).toHaveText("Yes");
+        await expect(dnsRuleRow(page, 2)).toContainText("Logical (and)");
+        await expect(dnsRuleValue(page, 2, "Conditions")).toHaveText("2 subrules");
+        await expect(dnsRuleValue(page, 2, "Invert")).toHaveText("Yes", { useInnerText: true });
 
         await expect(page.getByLabel("Final")).toHaveValue("google");
         await expect(page.getByLabel("Domain strategy")).toHaveValue("prefer_ipv4");
@@ -2303,7 +2325,9 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Path").fill("/dns-query");
         await dialog.getByRole("button", { name: "Save" }).click();
 
-        await expect(cardValue(page, "DNS servers", "quad9", "Server")).toHaveText("9.9.9.9");
+        await expect(dnsServerValue(page, "quad9", "Server")).toHaveText("9.9.9.9", {
+            useInnerText: true,
+        });
         // On the page, and not yet in the document.
         expect(dnsIn(state).servers).toHaveLength(3);
 
@@ -2448,15 +2472,17 @@ test.describe("the panel", () => {
         await page.goto("/dns");
         await page.getByRole("button", { name: "Delete local" }).click();
 
-        const question = namedCard(page, "DNS servers", "local").getByRole("alertdialog", {
+        const question = page.getByRole("alertdialog", {
             name: "Delete",
         });
 
         await expect(question).toContainText("nowhere to send them");
         await question.getByRole("button", { name: "Yes" }).click();
 
-        await expect(namedCard(page, "DNS servers", "local")).toBeHidden();
-        await expect(cardValue(page, "DNS rules", "1", "Server")).toHaveText("local missing");
+        await expect(dnsServerRow(page, "local")).toBeHidden();
+        await expect(dnsRuleValue(page, 1, "Server")).toHaveText(/local\s*missing/, {
+            useInnerText: true,
+        });
     });
 
     test("reorders the DNS rules by dragging one onto another", async ({ page }) => {
@@ -2466,11 +2492,11 @@ test.describe("the panel", () => {
 
         await page.goto("/dns");
 
-        const rules = page.getByRole("list", { name: "DNS rules" }).getByRole("listitem");
+        await page
+            .getByRole("button", { name: "Drag rule 2 to reorder", exact: true })
+            .dragTo(dnsRuleRow(page, 1));
 
-        await rules.nth(1).dragTo(rules.nth(0));
-
-        await expect(cardValue(page, "DNS rules", "1", "Server")).toHaveText("google");
+        await expect(dnsRuleValue(page, 1, "Server")).toHaveText("google", { useInnerText: true });
         await page.getByRole("button", { name: "Save", exact: true }).click();
 
         await expect
@@ -2492,10 +2518,10 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Mode").selectOption("or");
         await dialog.getByRole("button", { name: "Save" }).click();
 
-        await expect(cardValue(page, "DNS rules", "1", "Server")).toHaveText("local");
-        await expect(cardValue(page, "DNS rules", "2", "Server")).toHaveText("google");
+        await expect(dnsRuleValue(page, 1, "Server")).toHaveText("local", { useInnerText: true });
+        await expect(dnsRuleValue(page, 2, "Server")).toHaveText("google", { useInnerText: true });
         // Everything the dialog does not ask about is carried through untouched.
-        await expect(cardValue(page, "DNS rules", "2", "Rules")).toHaveText("2");
+        await expect(dnsRuleValue(page, 2, "Conditions")).toHaveText("2 subrules");
         await page.getByRole("button", { name: "Save", exact: true }).click();
 
         await expect
@@ -2532,9 +2558,9 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Domain suffixes").fill(".ads.example, .track.example");
         await dialog.getByRole("button", { name: "Save" }).click();
 
-        await expect(cardValue(page, "DNS rules", "3", "Action")).toHaveText("reject");
-        await expect(cardValue(page, "DNS rules", "3", "Server")).toHaveText("—");
-        await expect(cardValue(page, "DNS rules", "3", "Rules")).toHaveText("1");
+        await expect(dnsRuleValue(page, 3, "Action")).toHaveText("reject", { useInnerText: true });
+        await expect(dnsRuleValue(page, 3, "Server")).toHaveText("—", { useInnerText: true });
+        await expect(dnsRuleValue(page, 3, "Conditions")).toHaveText("1 condition");
 
         await page.getByRole("button", { name: "Save", exact: true }).click();
         await expect
@@ -2598,7 +2624,7 @@ test.describe("the panel", () => {
             });
     });
 
-    test("deletes a DNS rule once asked on its card", async ({ page }) => {
+    test("deletes a DNS rule once confirmed in a dialog", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false, baseConfig: dnsConfig() });
 
         await page.goto("/dns");
@@ -2609,12 +2635,11 @@ test.describe("the panel", () => {
         await expect(question).toContainText("goes on to the rules after it");
         await question.getByRole("button", { name: "Yes" }).click();
 
-        // What was second is first now, and the card that was asking has gone
-        // rather than handing its question on to the one after it.
+        // What was second is first now, and the confirmation closes with the deletion.
         await expect(
-            page.getByRole("list", { name: "DNS rules" }).getByRole("listitem"),
+            page.getByRole("table", { name: "DNS rules", exact: true }).locator("tbody > tr"),
         ).toHaveCount(1);
-        await expect(cardValue(page, "DNS rules", "1", "Server")).toHaveText("google");
+        await expect(dnsRuleValue(page, 1, "Server")).toHaveText("google", { useInnerText: true });
         await expect(page.getByRole("alertdialog")).toBeHidden();
     });
 
@@ -3087,6 +3112,20 @@ test.describe("the panel", () => {
 
     const routeIn = (state: ApiState) => state.baseConfig?.route as RouteDocument;
 
+    const routeRow = (page: Page, table: string, title: string) =>
+        page
+            .getByRole("table", { name: table, exact: true })
+            .getByRole("row")
+            .filter({
+                has: page.getByRole("button", {
+                    name: `Edit ${table === "Rules" ? "rule " : ""}${title}`,
+                    exact: true,
+                }),
+            });
+
+    const routeValue = (page: Page, table: string, title: string, column: string) =>
+        routeRow(page, table, title).locator(`[data-column="${column}"]`);
+
     const routeState = (): ApiState => ({
         signedIn: true,
         maintenance: false,
@@ -3098,20 +3137,25 @@ test.describe("the panel", () => {
         ],
     });
 
-    test("shows a node's rule sets and rules as cards", async ({ page }) => {
+    test("shows a node's rule sets and rules as lists", async ({ page }) => {
         await mockApi(page, routeState());
 
         await page.goto("/rules");
 
-        await expect(namedCard(page, "Rule sets", "geosite-ads")).toContainText("Remote");
-        await expect(cardValue(page, "Rule sets", "geosite-ads", "Outbound")).toHaveText(
+        await expect(routeRow(page, "Rule sets", "geosite-ads")).toContainText("Remote");
+        await expect(routeValue(page, "Rule sets", "geosite-ads", "Outbound")).toHaveText(
             "upstream",
+            { useInnerText: true },
         );
-        await expect(cardValue(page, "Rule sets", "blocklist", "Update")).toHaveText("—");
+        await expect(routeValue(page, "Rule sets", "blocklist", "Update")).toHaveText("—", {
+            useInnerText: true,
+        });
 
-        await expect(namedCard(page, "Rules", "3")).toContainText("Logical (or)");
-        await expect(cardValue(page, "Rules", "3", "Outbound")).toHaveText("out");
-        await expect(cardValue(page, "Rules", "2", "Rules")).toHaveText("1");
+        await expect(routeRow(page, "Rules", "3")).toContainText("Logical (or)");
+        await expect(routeValue(page, "Rules", "3", "Outbound")).toHaveText("out", {
+            useInnerText: true,
+        });
+        await expect(routeValue(page, "Rules", "2", "Conditions")).toHaveText("1 condition");
 
         await expect(page.getByLabel("Default outbound")).toHaveValue("upstream");
         await expect(page.getByRole("switch", { name: "Auto-bind interface" })).toBeChecked();
@@ -3140,7 +3184,9 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Domain suffixes").fill(".internal\n.lan");
         await dialog.getByRole("button", { name: "Save" }).click();
 
-        await expect(cardValue(page, "Rules", "4", "Outbound")).toHaveText("wg0");
+        await expect(routeValue(page, "Rules", "4", "Outbound")).toHaveText("wg0", {
+            useInnerText: true,
+        });
         expect(routeIn(state).rules).toHaveLength(3);
 
         const save = page.getByRole("button", { name: "Save", exact: true });
@@ -3242,11 +3288,16 @@ test.describe("the panel", () => {
 
         await page.goto("/rules");
 
-        const rules = page.getByRole("list", { name: "Rules" }).getByRole("listitem");
+        const rules = page.getByRole("table", { name: "Rules", exact: true }).locator("tbody > tr");
 
-        await rules.nth(2).dragTo(rules.nth(0));
+        await rules
+            .nth(2)
+            .getByRole("button", { name: "Drag rule 3 to reorder" })
+            .dragTo(rules.nth(0));
 
-        await expect(cardValue(page, "Rules", "1", "Outbound")).toHaveText("out");
+        await expect(routeValue(page, "Rules", "1", "Outbound")).toHaveText("out", {
+            useInnerText: true,
+        });
         await page.getByRole("button", { name: "Save", exact: true }).click();
 
         await expect
@@ -3272,7 +3323,7 @@ test.describe("the panel", () => {
             .toEqual(["sniff", "hijack-dns", "route"]);
     });
 
-    test("deletes a rule set once asked on its card", async ({ page }) => {
+    test("deletes a rule set once confirmed in its dialog", async ({ page }) => {
         const state = routeState();
 
         await mockApi(page, state);
@@ -3280,13 +3331,13 @@ test.describe("the panel", () => {
         await page.goto("/rules");
         await page.getByRole("button", { name: "Delete blocklist", exact: true }).click();
 
-        const question = namedCard(page, "Rule sets", "blocklist").getByRole("alertdialog", {
+        const question = page.getByRole("alertdialog", {
             name: "Delete",
         });
 
         await expect(question).toContainText("naming nothing");
         await question.getByRole("button", { name: "Yes" }).click();
-        await expect(namedCard(page, "Rule sets", "blocklist")).toBeHidden();
+        await expect(routeRow(page, "Rule sets", "blocklist")).toBeHidden();
 
         await page.getByRole("button", { name: "Save", exact: true }).click();
 
@@ -3367,8 +3418,10 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Send what no rule matches to out, as it does").check();
         await dialog.getByRole("button", { name: "Import" }).click();
 
-        await expect(cardValue(page, "Rules", "4", "Action")).toHaveText("hijack-dns");
-        await expect(namedCard(page, "Rule sets", "allowlist")).toBeVisible();
+        await expect(routeValue(page, "Rules", "4", "Action")).toHaveText("hijack-dns", {
+            useInnerText: true,
+        });
+        await expect(routeRow(page, "Rule sets", "allowlist")).toBeVisible();
         await expect(page.getByLabel("Default outbound")).toHaveValue("out");
 
         await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -3392,8 +3445,12 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Route to").selectOption("upstream");
         await dialog.getByRole("button", { name: "Add", exact: true }).click();
 
-        await expect(cardValue(page, "Rule sets", "geosite-youtube", "Update")).toHaveText("1d");
-        await expect(cardValue(page, "Rules", "4", "Outbound")).toHaveText("upstream");
+        await expect(routeValue(page, "Rule sets", "geosite-youtube", "Update")).toHaveText("1d", {
+            useInnerText: true,
+        });
+        await expect(routeValue(page, "Rules", "4", "Outbound")).toHaveText("upstream", {
+            useInnerText: true,
+        });
     });
 
     test("imports rule sets from a list of addresses", async ({ page }) => {
@@ -3413,10 +3470,11 @@ test.describe("the panel", () => {
         await dialog.getByLabel("Outbound").selectOption("upstream");
         await dialog.getByRole("button", { name: "Add rule sets" }).click();
 
-        await expect(cardValue(page, "Rule sets", "geoip-telegram", "Outbound")).toHaveText(
+        await expect(routeValue(page, "Rule sets", "geoip-telegram", "Outbound")).toHaveText(
             "upstream",
+            { useInnerText: true },
         );
-        await expect(namedCard(page, "Rule sets", "category-ads-all")).toBeVisible();
+        await expect(routeRow(page, "Rule sets", "category-ads-all")).toBeVisible();
     });
 
     test("shows when a tunnel's traffic went, as any route out's is shown", async ({ page }) => {

@@ -227,7 +227,7 @@ const ACTION_KEYS = new Set([
     "extra",
 ]);
 
-// How many conditions a rule matches on, which the card says under "Rules".
+// How many conditions a rule matches on, excluding what it does with a query.
 export const ruleConditions = (rule: DnsRule) => conditionCount(rule, ACTION_KEYS);
 
 // Reads an options document, or null when it is not a JSON object.

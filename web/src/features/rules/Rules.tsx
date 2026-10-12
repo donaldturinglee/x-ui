@@ -4,7 +4,6 @@ import {
     Button,
     IconButton,
     InlineMessage,
-    List,
     NativeSelect,
     Stack,
 } from "@gamecrafters/base-ui/react";
@@ -17,13 +16,12 @@ import {
 import { useId, useRef, useState } from "react";
 
 import { AddButton } from "@/components/AddButton";
+import { ConfigListDeleteDialog } from "@/components/ConfigList";
 import { FilledSelect, FilledSwitch, FilledTextInput } from "@/components/FilledField";
 import { SectionTitle } from "@/components/SectionTitle";
-import { TaggedCards } from "@/components/TaggedCard";
 import { toDocument, useBaseConfig, useSaveBaseConfig } from "@/features/config/api";
 import { dnsOf } from "@/features/dns/api";
 import { useOutbounds } from "@/features/outbounds/api";
-import { keyOf } from "@/lib/rules";
 
 import {
     isRouteChanged,
@@ -38,10 +36,10 @@ import {
 import { ImportRulesDialog } from "./components/ImportRulesDialog";
 import { ImportRuleSetsDialog } from "./components/ImportRuleSetsDialog";
 import { PresetRuleSetsDialog } from "./components/PresetRuleSetsDialog";
-import { RuleCard } from "./components/RuleCard";
 import { RuleDialog } from "./components/RuleDialog";
-import { RuleSetCard } from "./components/RuleSetCard";
 import { RuleSetDialog } from "./components/RuleSetDialog";
+import { RuleSetsTable } from "./components/RuleSetsTable";
+import { RulesTable } from "./components/RulesTable";
 
 // A whole row on a phone, half of it on a tablet, a quarter on a laptop and a
 // sixth on a wide screen, less its share of the gaps between them.
@@ -52,6 +50,11 @@ const FIELD_WIDTH =
 // its index is null.
 interface Editing {
     index: number | null;
+}
+
+interface Deleting {
+    index: number;
+    isRuleSet: boolean;
 }
 
 type Tool = "rules" | "ruleSets" | "presets";
@@ -75,6 +78,8 @@ export const Rules = () => {
 
     const addRuleRef = useRef<HTMLButtonElement>(null);
     const toolsRef = useRef<HTMLButtonElement>(null);
+    const editReturnFocusRef = useRef<HTMLButtonElement>(null);
+    const deleteReturnFocusRef = useRef<HTMLButtonElement>(null);
 
     const { data: config, error: readError, isLoading } = useBaseConfig();
     const { trigger: save, isMutating: isSaving, error: saveError } = useSaveBaseConfig();
@@ -86,7 +91,7 @@ export const Rules = () => {
     const [editingRule, setEditingRule] = useState<Editing | null>(null);
     const [editingRuleSet, setEditingRuleSet] = useState<number | null>(null);
     const [tool, setTool] = useState<Tool | null>(null);
-    const [dragged, setDragged] = useState<number | null>(null);
+    const [deleting, setDeleting] = useState<Deleting | null>(null);
 
     const route = draft ?? routeOf(config);
     const rules = route.rules ?? [];
@@ -130,6 +135,7 @@ export const Rules = () => {
                     : rules.map((current, place) => (place === index ? rule : current)),
         });
 
+        editReturnFocusRef.current = addRuleRef.current;
         setEditingRule(null);
     };
 
@@ -143,29 +149,29 @@ export const Rules = () => {
                 position === editingRuleSet ? ruleSet : current,
             ),
         });
+        editReturnFocusRef.current = toolsRef.current;
         setEditingRuleSet(null);
     };
 
-    // The card deleted is gone along with its buttons, so focus goes to the
-    // toolbar.
-    const deleteRule = (index: number) => {
-        change({ rules: rules.filter((_, position) => position !== index) });
-        addRuleRef.current?.focus();
+    const confirmDelete = () => {
+        if (deleting === null) return;
+
+        const { index, isRuleSet } = deleting;
+        change(
+            isRuleSet
+                ? { rule_set: ruleSets.filter((_, position) => position !== index) }
+                : { rules: rules.filter((_, position) => position !== index) },
+        );
+        // The row's trigger is removed with it, so the dialog returns to the
+        // toolbar after a confirmed deletion.
+        deleteReturnFocusRef.current = isRuleSet ? toolsRef.current : addRuleRef.current;
+        setDeleting(null);
     };
 
-    const deleteRuleSet = (index: number) => {
-        change({ rule_set: ruleSets.filter((_, position) => position !== index) });
-        toolsRef.current?.focus();
-    };
-
-    // A rule dropped on another takes its place, and everything from there on
-    // moves along one, the way the reference reorders them.
-    const dropRule = (index: number) => {
-        if (dragged !== null && dragged !== index) {
-            change({ rules: moveRule(rules, dragged, index) });
+    const reorderRule = (from: number, to: number) => {
+        if (from !== to && from >= 0 && from < rules.length && to >= 0 && to < rules.length) {
+            change({ rules: moveRule(rules, from, to) });
         }
-
-        setDragged(null);
     };
 
     const addRuleSets = (added: RuleSet[], rule: RouteRule | null = null) => {
@@ -190,7 +196,10 @@ export const Rules = () => {
                             label="Add rule"
                             spellsOut
                             disabled={!isReady}
-                            onClick={() => setEditingRule({ index: null })}
+                            onClick={() => {
+                                editReturnFocusRef.current = addRuleRef.current;
+                                setEditingRule({ index: null });
+                            }}
                         />
                     </span>
                     {/* What brings rules and rule sets in from elsewhere rather
@@ -372,54 +381,45 @@ export const Rules = () => {
 
                 <SectionTitle id={ruleSetsId}>Rule sets</SectionTitle>
 
-                <TaggedCards labelledBy={ruleSetsId} isLoading={isLoading}>
-                    {ruleSets.map((ruleSet, index) => (
-                        <List.Item key={keyOf(ruleSet)}>
-                            <RuleSetCard
-                                ruleSet={ruleSet}
-                                onEdit={() => setEditingRuleSet(index)}
-                                onDelete={() => deleteRuleSet(index)}
-                            />
-                        </List.Item>
-                    ))}
-                </TaggedCards>
+                <RuleSetsTable
+                    labelledBy={ruleSetsId}
+                    ruleSets={ruleSets}
+                    isLoading={isLoading}
+                    hasError={Boolean(readError)}
+                    disabled={!isReady || isSaving}
+                    onEdit={(index, anchor) => {
+                        editReturnFocusRef.current = anchor;
+                        setEditingRuleSet(index);
+                    }}
+                    onDelete={(index, anchor) => {
+                        deleteReturnFocusRef.current = anchor;
+                        setDeleting({ index, isRuleSet: true });
+                    }}
+                />
 
                 <SectionTitle id={rulesId}>Rules</SectionTitle>
 
-                <TaggedCards labelledBy={rulesId} isLoading={isLoading}>
-                    {rules.map((rule, index) => (
-                        <List.Item
-                            key={keyOf(rule)}
-                            draggable
-                            onDragStart={(event) => {
-                                // Some browsers start no drag without something
-                                // being carried, so the place it came from is.
-                                event.dataTransfer.effectAllowed = "move";
-                                event.dataTransfer.setData("text/plain", String(index));
-                                setDragged(index);
-                            }}
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={(event) => {
-                                event.preventDefault();
-                                dropRule(index);
-                            }}
-                            onDragEnd={() => setDragged(null)}
-                        >
-                            <RuleCard
-                                rule={rule}
-                                position={index}
-                                outboundTags={outboundTags}
-                                onEdit={() => setEditingRule({ index })}
-                                onDelete={() => deleteRule(index)}
-                            />
-                        </List.Item>
-                    ))}
-                </TaggedCards>
+                <RulesTable
+                    labelledBy={rulesId}
+                    rules={rules}
+                    outboundTags={outboundTags}
+                    isLoading={isLoading}
+                    hasError={Boolean(readError)}
+                    disabled={!isReady || isSaving}
+                    onEdit={(index, anchor) => {
+                        editReturnFocusRef.current = anchor;
+                        setEditingRule({ index });
+                    }}
+                    onDelete={(index, anchor) => {
+                        deleteReturnFocusRef.current = anchor;
+                        setDeleting({ index, isRuleSet: false });
+                    }}
+                    onMove={reorderRule}
+                />
             </Stack>
 
-            {/* Mounted only while open, so what was typed into one is gone by the
-                time it is opened again. Focus goes back to the Add button when
-                the dialog closes. */}
+            {/* Each dialog starts with a fresh copy and returns focus to its
+                trigger on cancellation, or the toolbar when the row is replaced. */}
             {editingRule && (
                 <RuleDialog
                     rule={editingRule.index === null ? undefined : rules[editingRule.index]}
@@ -427,7 +427,7 @@ export const Rules = () => {
                     ruleSetTags={ruleSetTags}
                     onSave={saveRule}
                     onClose={() => setEditingRule(null)}
-                    returnFocusRef={addRuleRef}
+                    returnFocusRef={editReturnFocusRef}
                 />
             )}
 
@@ -438,7 +438,25 @@ export const Rules = () => {
                     outboundTags={outboundTags}
                     onSave={saveRuleSet}
                     onClose={() => setEditingRuleSet(null)}
-                    returnFocusRef={toolsRef}
+                    returnFocusRef={editReturnFocusRef}
+                />
+            )}
+
+            {deleting && (
+                <ConfigListDeleteDialog
+                    name={
+                        deleting.isRuleSet
+                            ? ruleSets[deleting.index].tag
+                            : `rule ${deleting.index + 1}`
+                    }
+                    message={
+                        deleting.isRuleSet
+                            ? "Are you sure? A rule that names it is left naming nothing."
+                            : "Are you sure? What it matched goes on to the rules after it."
+                    }
+                    onConfirm={confirmDelete}
+                    onClose={() => setDeleting(null)}
+                    returnFocusRef={deleteReturnFocusRef}
                 />
             )}
 

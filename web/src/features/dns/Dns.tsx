@@ -1,13 +1,12 @@
-import { Button, InlineMessage, List, NativeSelect, Stack } from "@gamecrafters/base-ui/react";
+import { Button, InlineMessage, NativeSelect, Stack } from "@gamecrafters/base-ui/react";
 import { useId, useRef, useState } from "react";
 
 import { AddButton } from "@/components/AddButton";
+import { ConfigListDeleteDialog } from "@/components/ConfigList";
 import { FilledCheckbox, FilledSelect, FilledTextInput } from "@/components/FilledField";
 import { SectionTitle } from "@/components/SectionTitle";
-import { TaggedCards } from "@/components/TaggedCard";
 import { toDocument, useBaseConfig, useSaveBaseConfig } from "@/features/config/api";
 import { routeOf } from "@/features/rules/api";
-import { keyOf } from "@/lib/rules";
 
 import {
     DNS_STRATEGIES,
@@ -19,10 +18,10 @@ import {
     type DnsRule,
     type DnsServer,
 } from "./api";
-import { DnsRuleCard } from "./components/DnsRuleCard";
 import { DnsRuleDialog } from "./components/DnsRuleDialog";
-import { DnsServerCard } from "./components/DnsServerCard";
+import { DnsRulesTable } from "./components/DnsRulesTable";
 import { DnsServerDialog } from "./components/DnsServerDialog";
+import { DnsServersTable } from "./components/DnsServersTable";
 
 // Three a row on a phone would not fit, so a field takes the whole row there,
 // half of it on a tablet, a quarter on a laptop and a sixth on a wide screen,
@@ -36,9 +35,14 @@ interface Editing {
     index: number | null;
 }
 
+interface Deleting {
+    index: number;
+    isServer: boolean;
+}
+
 // How a node resolves names, laid out the way the reference lays it out: the
 // buttons that add a server or a rule beside the one that saves, the settings
-// that apply to every query, and then the servers and the rules as cards.
+// that apply to every query, and then the servers and the rules in document order.
 //
 // It is all one section of the base document, so it is edited as a copy on the
 // page and written back whole by Save, as the reference does it. Nothing an
@@ -58,6 +62,8 @@ export const Dns = () => {
 
     const addServerRef = useRef<HTMLButtonElement>(null);
     const addRuleRef = useRef<HTMLButtonElement>(null);
+    const editReturnFocusRef = useRef<HTMLButtonElement>(null);
+    const deleteReturnFocusRef = useRef<HTMLButtonElement>(null);
 
     const { data: config, error: readError, isLoading } = useBaseConfig();
     const { trigger: save, isMutating: isSaving, error: saveError } = useSaveBaseConfig();
@@ -68,7 +74,7 @@ export const Dns = () => {
     const [draft, setDraft] = useState<DnsSection | null>(null);
     const [editingServer, setEditingServer] = useState<Editing | null>(null);
     const [editingRule, setEditingRule] = useState<Editing | null>(null);
-    const [dragged, setDragged] = useState<number | null>(null);
+    const [deleting, setDeleting] = useState<Deleting | null>(null);
 
     const dns = draft ?? dnsOf(config);
     const servers = dns.servers ?? [];
@@ -105,6 +111,7 @@ export const Dns = () => {
                     ? [...servers, server]
                     : servers.map((current, position) => (position === index ? server : current)),
         });
+        editReturnFocusRef.current = addServerRef.current;
         setEditingServer(null);
     };
 
@@ -118,51 +125,55 @@ export const Dns = () => {
                     : rules.map((current, place) => (place === index ? rule : current)),
         });
 
+        editReturnFocusRef.current = addRuleRef.current;
         setEditingRule(null);
     };
 
-    // The card deleted is gone along with its buttons, so focus goes to what
-    // adds another rather than being dropped on the page.
-    const deleteServer = (index: number) => {
-        change({ servers: servers.filter((_, position) => position !== index) });
-        addServerRef.current?.focus();
-    };
+    const confirmDelete = () => {
+        if (deleting === null) return;
 
-    const deleteRule = (index: number) => {
-        change({ rules: rules.filter((_, position) => position !== index) });
-        addRuleRef.current?.focus();
+        const { index, isServer } = deleting;
+        change(
+            isServer
+                ? { servers: servers.filter((_, position) => position !== index) }
+                : { rules: rules.filter((_, position) => position !== index) },
+        );
+        // The deleted row's trigger is gone, so return to the matching Add button.
+        deleteReturnFocusRef.current = isServer ? addServerRef.current : addRuleRef.current;
+        setDeleting(null);
     };
 
     // A rule dropped on another takes its place, and everything from there on
     // moves along one, the way the reference reorders them.
-    const dropRule = (index: number) => {
-        if (dragged !== null && dragged !== index) {
-            change({ rules: moveRule(rules, dragged, index) });
+    const reorderRule = (from: number, to: number) => {
+        if (from !== to && from >= 0 && from < rules.length && to >= 0 && to < rules.length) {
+            change({ rules: moveRule(rules, from, to) });
         }
-
-        setDragged(null);
     };
 
     return (
         <>
             <Stack gap="condensed">
-                {/* Spaced the way the reference spaces them: each add button
-                    carries a little room either side and Save none, so the three
-                    sit just right of the middle. */}
-                <div className="flex justify-center [&>*]:mx-[5px] [&>*:last-child]:mx-0">
+                <div className="flex flex-wrap items-center justify-center gap-2">
                     <AddButton
                         ref={addServerRef}
                         label="Add DNS server"
                         spellsOut
                         disabled={!isReady}
-                        onClick={() => setEditingServer({ index: null })}
+                        onClick={() => {
+                            editReturnFocusRef.current = addServerRef.current;
+                            setEditingServer({ index: null });
+                        }}
                     />
                     <AddButton
                         ref={addRuleRef}
                         label="Add DNS rule"
                         spellsOut
                         disabled={!isReady}
-                        onClick={() => setEditingRule({ index: null })}
+                        onClick={() => {
+                            editReturnFocusRef.current = addRuleRef.current;
+                            setEditingRule({ index: null });
+                        }}
                     />
                     {/* Outlined in the colour of something not yet done, and
                         faded out until there is something to save. */}
@@ -299,61 +310,51 @@ export const Dns = () => {
 
                 <SectionTitle id={serversId}>DNS servers</SectionTitle>
 
-                <TaggedCards labelledBy={serversId} isLoading={isLoading}>
-                    {servers.map((server, index) => (
-                        <List.Item key={keyOf(server)}>
-                            <DnsServerCard
-                                server={server}
-                                onEdit={() => setEditingServer({ index })}
-                                onDelete={() => deleteServer(index)}
-                            />
-                        </List.Item>
-                    ))}
-                </TaggedCards>
+                <DnsServersTable
+                    labelledBy={serversId}
+                    servers={servers}
+                    isLoading={isLoading}
+                    hasError={Boolean(readError)}
+                    disabled={!isReady}
+                    onEdit={(index, anchor) => {
+                        editReturnFocusRef.current = anchor;
+                        setEditingServer({ index });
+                    }}
+                    onDelete={(index, anchor) => {
+                        deleteReturnFocusRef.current = anchor;
+                        setDeleting({ index, isServer: true });
+                    }}
+                />
 
                 <SectionTitle id={rulesId}>DNS rules</SectionTitle>
 
-                <TaggedCards labelledBy={rulesId} isLoading={isLoading}>
-                    {rules.map((rule, index) => (
-                        <List.Item
-                            key={keyOf(rule)}
-                            draggable
-                            onDragStart={(event) => {
-                                // Some browsers start no drag without something
-                                // being carried, so the place it came from is.
-                                event.dataTransfer.effectAllowed = "move";
-                                event.dataTransfer.setData("text/plain", String(index));
-                                setDragged(index);
-                            }}
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={(event) => {
-                                event.preventDefault();
-                                dropRule(index);
-                            }}
-                            onDragEnd={() => setDragged(null)}
-                        >
-                            <DnsRuleCard
-                                rule={rule}
-                                position={index}
-                                serverTags={serverTags}
-                                onEdit={() => setEditingRule({ index })}
-                                onDelete={() => deleteRule(index)}
-                            />
-                        </List.Item>
-                    ))}
-                </TaggedCards>
+                <DnsRulesTable
+                    labelledBy={rulesId}
+                    rules={rules}
+                    serverTags={serverTags}
+                    isLoading={isLoading}
+                    hasError={Boolean(readError)}
+                    disabled={!isReady}
+                    onEdit={(index, anchor) => {
+                        editReturnFocusRef.current = anchor;
+                        setEditingRule({ index });
+                    }}
+                    onDelete={(index, anchor) => {
+                        deleteReturnFocusRef.current = anchor;
+                        setDeleting({ index, isServer: false });
+                    }}
+                    onMove={reorderRule}
+                />
             </Stack>
 
-            {/* Mounted only while open, so what was typed into one is gone by the
-                time it is opened again. Focus goes back to the Add button when
-                the dialog closes. */}
+            {/* Mounted only while open, so reopening a dialog reads its current entry. */}
             {editingServer && (
                 <DnsServerDialog
                     server={editingServer.index === null ? undefined : servers[editingServer.index]}
                     takenTags={serverTags}
                     onSave={saveServer}
                     onClose={() => setEditingServer(null)}
-                    returnFocusRef={addServerRef}
+                    returnFocusRef={editReturnFocusRef}
                 />
             )}
 
@@ -364,7 +365,25 @@ export const Dns = () => {
                     ruleSetTags={ruleSetTags}
                     onSave={saveRule}
                     onClose={() => setEditingRule(null)}
-                    returnFocusRef={addRuleRef}
+                    returnFocusRef={editReturnFocusRef}
+                />
+            )}
+
+            {deleting && (
+                <ConfigListDeleteDialog
+                    name={
+                        deleting.isServer
+                            ? servers[deleting.index].tag
+                            : `rule ${deleting.index + 1}`
+                    }
+                    message={
+                        deleting.isServer
+                            ? "Are you sure? Rules that send queries to it are left with nowhere to send them."
+                            : "Are you sure? What it matched goes on to the rules after it."
+                    }
+                    onConfirm={confirmDelete}
+                    onClose={() => setDeleting(null)}
+                    returnFocusRef={deleteReturnFocusRef}
                 />
             )}
         </>
