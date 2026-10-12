@@ -54,7 +54,7 @@ test("shows compact tables, logical counts and missing outbound references", asy
     await page.goto("/rules");
 
     await expect(rulesTable(page).getByRole("columnheader")).toHaveText([
-        "Order",
+        "",
         "Type",
         "Action",
         "Outbound",
@@ -125,11 +125,7 @@ test("moves rules with the keyboard and edits the moved rule before saving", asy
     expect(storedRules(state)[0]).toMatchObject({ action: "route", outbound: "upstream" });
     await page.reload();
     await expect(actions(page)).toHaveText(["route", "sniff", "reject"], { useInnerText: true });
-    await expect(rulesTable(page).locator('tbody [data-column="Order"]')).toHaveText([
-        "1",
-        "2",
-        "3",
-    ]);
+    await expect(rulesTable(page).locator('tbody [data-column="Order"]')).toHaveText(["", "", ""]);
 });
 
 test("cancels deletion and returns focus, then deletes only the selected rule in the draft", async ({

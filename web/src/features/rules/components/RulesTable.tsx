@@ -41,7 +41,7 @@ export const RulesTable = ({
     return (
         <ConfigListTable
             labelledBy={labelledBy}
-            columns={["Order", "Type", "Action", "Outbound", "Conditions", "Invert", "Actions"]}
+            columns={["", "Type", "Action", "Outbound", "Conditions", "Invert", "Actions"]}
             isLoading={isLoading}
             isEmpty={rules.length === 0}
             hasError={hasError}

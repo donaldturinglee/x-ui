@@ -111,9 +111,7 @@ const Explained = ({ text, children }: { text: string; children: ReactNode }) =>
     );
 };
 
-// A subscriber as the reference lays one out across the table: who they are,
-// whether they may connect, where through, what can be done to them, how much of
-// their quota and their time is left, and when they were last seen.
+// A subscriber's identity, access, quota and activity, followed by their actions.
 export const ClientRow = ({
     client,
     inboundTags,
@@ -166,49 +164,6 @@ export const ClientRow = ({
                     <Explained text={inboundTags.join(", ")}>{inboundTags.length}</Explained>
                 ) : (
                     0
-                )}
-            </Cell>
-
-            <Cell title="Action">
-                <div className="flex items-center">
-                    <RowAction icon={EditRegular} label={`Edit ${client.name}`} onClick={onEdit} />
-
-                    <RowAction
-                        ref={deleteButtonRef}
-                        icon={DeleteRegular}
-                        label={`Delete ${client.name}`}
-                        className="text-[var(--foreground-color-danger)]"
-                        onClick={() => setIsDeleting(true)}
-                    />
-
-                    {/* The code is the subscription link, with the individual
-                        links beside it for pasting one node somewhere by hand. */}
-                    <RowAction
-                        icon={QrCodeRegular}
-                        label={`Connection links for ${client.name}`}
-                        onClick={onLinks}
-                    />
-
-                    {/* The counter says how much is left; this says when it went,
-                        which is the question asked when a subscriber says it
-                        stopped working on Tuesday. */}
-                    <Tooltip text="Traffic chart">
-                        <IconButton
-                            icon={<DataTrendingRegular size={21} />}
-                            aria-label={`Traffic for ${client.name}`}
-                            variant="invisible"
-                            className="size-[21px] min-w-0 p-0 text-[var(--foreground-color-default)]"
-                            onClick={onTraffic}
-                        />
-                    </Tooltip>
-                </div>
-
-                {isDeleting && (
-                    <DeleteClientDialog
-                        client={client}
-                        anchorRef={deleteButtonRef}
-                        onClose={() => setIsDeleting(false)}
-                    />
                 )}
             </Cell>
 
@@ -298,6 +253,49 @@ export const ClientRow = ({
                 <span className="whitespace-nowrap">
                     {client.onlineAt ? toDate(client.onlineAt).toLocaleString() : "—"}
                 </span>
+            </Cell>
+
+            <Cell title="Actions">
+                <div className="flex items-center">
+                    <RowAction icon={EditRegular} label={`Edit ${client.name}`} onClick={onEdit} />
+
+                    <RowAction
+                        ref={deleteButtonRef}
+                        icon={DeleteRegular}
+                        label={`Delete ${client.name}`}
+                        className="text-[var(--foreground-color-danger)]"
+                        onClick={() => setIsDeleting(true)}
+                    />
+
+                    {/* The code is the subscription link, with the individual
+                        links beside it for pasting one node somewhere by hand. */}
+                    <RowAction
+                        icon={QrCodeRegular}
+                        label={`Connection links for ${client.name}`}
+                        onClick={onLinks}
+                    />
+
+                    {/* The counter says how much is left; this says when it went,
+                        which is the question asked when a subscriber says it
+                        stopped working on Tuesday. */}
+                    <Tooltip text="Traffic chart">
+                        <IconButton
+                            icon={<DataTrendingRegular size={21} />}
+                            aria-label={`Traffic for ${client.name}`}
+                            variant="invisible"
+                            className="size-[21px] min-w-0 p-0 text-[var(--foreground-color-default)]"
+                            onClick={onTraffic}
+                        />
+                    </Tooltip>
+                </div>
+
+                {isDeleting && (
+                    <DeleteClientDialog
+                        client={client}
+                        anchorRef={deleteButtonRef}
+                        onClose={() => setIsDeleting(false)}
+                    />
+                )}
             </Cell>
         </tr>
     );

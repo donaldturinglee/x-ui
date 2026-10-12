@@ -1543,7 +1543,7 @@ test.describe("the panel", () => {
         ).toBeHidden();
     });
 
-    test("lays the subscribers out in the reference's columns", async ({ page }) => {
+    test("places subscriber actions after their details", async ({ page }) => {
         await mockApi(page, { signedIn: true, maintenance: false });
 
         await page.goto("/clients");
@@ -1556,12 +1556,12 @@ test.describe("the panel", () => {
             "Description",
             "Group",
             "Inbounds",
-            "Action",
             "Volume",
             "Expiry",
             "Online",
             "Created",
             "Last online",
+            "Actions",
         ]);
     });
 

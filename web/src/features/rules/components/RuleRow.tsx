@@ -69,7 +69,6 @@ export const RuleRow = ({
                         onDragStart={onDragStart}
                         onDragEnd={onDragEnd}
                     />
-                    <span className="font-medium">{position + 1}</span>
                 </div>
             </td>
             <td

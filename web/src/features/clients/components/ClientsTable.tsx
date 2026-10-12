@@ -59,20 +59,20 @@ interface Sort {
     direction: "ascending" | "descending";
 }
 
-// The columns as the reference lays them out, in its order. What can be done to a
-// subscriber and whether they are online are not values to order the rows by.
+// Actions follow the subscriber's details. Actions and online state are not
+// values to order the rows by.
 const COLUMNS: { title: string; key?: SortKey }[] = [
     { title: "Name", key: "name" },
     { title: "Enable", key: "enable" },
     { title: "Description", key: "desc" },
     { title: "Group", key: "group" },
     { title: "Inbounds", key: "inbounds" },
-    { title: "Action" },
     { title: "Volume", key: "volume" },
     { title: "Expiry", key: "expiry" },
     { title: "Online" },
     { title: "Created", key: "createdAt" },
     { title: "Last online", key: "onlineAt" },
+    { title: "Actions" },
 ];
 
 const sortValue = (client: Client, key: SortKey) => {
