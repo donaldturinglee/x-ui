@@ -967,6 +967,7 @@ test.describe("the panel", () => {
         await save.click();
 
         await expect(save).toBeDisabled();
+        await expect(form.getByLabel("Bot token")).toHaveValue("");
         expect(state.settings).toMatchObject({
             tgBotEnable: "true",
             tgBotToken: "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0",
@@ -1052,6 +1053,8 @@ test.describe("the panel", () => {
         await form.getByRole("button", { name: "Restore defaults" }).click();
 
         await expect(form.getByLabel("Bot token")).toHaveValue("");
+        await expect(form.getByRole("button", { name: "Send a test message" })).toBeDisabled();
+        expect(state.settings?.tgBotToken).toBe("");
         await expect(form.getByLabel("Chat IDs (comma separated)")).toHaveValue("");
         await expect(
             form.getByRole("switch", { name: "Scheduled status notifications" }),

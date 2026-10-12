@@ -1,11 +1,29 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/donaldturinglee/x-ui/internal/domain"
 )
+
+func TestEmptyBotTokenAndItsReadOnlyFlagDoNotWriteSettings(t *testing.T) {
+	// No repository is needed: these submissions must not read or write any
+	// settings, including an existing token or the schedule activation time.
+	settings := NewSettingService(nil)
+	for _, value := range []string{"", " \t\n "} {
+		if err := settings.Save(context.Background(), "operator", map[string]string{
+			domain.SettingTgBotToken: value,
+			telegramBotTokenSet:      "false",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := settings.Reset(context.Background(), "operator", []string{telegramBotTokenSet}); !errors.Is(err, domain.ErrInvalid) {
+		t.Errorf("resetting the response flag = %v, want an unknown setting refused", err)
+	}
+}
 
 func TestTheBotsSwitchesAreWrittenOneWay(t *testing.T) {
 	for _, value := range []string{"true", "TRUE", "1", "t"} {

@@ -22,6 +22,7 @@ import { FIELDS, FOOTER, GROUP_HEADING, PLAIN_BUTTON, RESTORE_BUTTON, SAVE_BUTTO
 // defaults, so nothing reads as blank for the moment the read takes.
 const DEFAULTS: TelegramRequest = {
     enabled: false,
+    tokenSet: false,
     token: "",
     chats: [],
     notifySignIn: true,
@@ -67,13 +68,13 @@ export const TelegramTab = () => {
     const [draft, setDraft] = useState<TelegramRequest | null>(null);
 
     const saved = settings ? fromTelegramSettings(settings) : undefined;
-    const values = draft ?? saved ?? DEFAULTS;
+    const values = { ...(draft ?? saved ?? DEFAULTS), tokenSet: saved?.tokenSet ?? false };
     const isChanged =
-        draft !== null && saved !== undefined && JSON.stringify(draft) !== JSON.stringify(saved);
+        draft !== null && saved !== undefined && JSON.stringify(values) !== JSON.stringify(saved);
     const checked = telegramRequest.safeParse(values);
-    const canTest = saved !== undefined && saved.token !== "" && saved.chats.length > 0;
+    const canTest = saved !== undefined && saved.tokenSet && saved.chats.length > 0;
 
-    const change = (changes: Partial<TelegramRequest>) => {
+    const change = (changes: Partial<Omit<TelegramRequest, "tokenSet">>) => {
         forgetTest();
         setDraft({ ...values, ...changes });
     };
@@ -117,7 +118,7 @@ export const TelegramTab = () => {
                         className="min-[600px]:col-span-2"
                         autoComplete="off"
                         spellCheck={false}
-                        disabled={isLoading}
+                        disabled={isLoading || isSaving || isResetting}
                         value={values.token}
                         onChange={(event) => change({ token: event.target.value })}
                     />

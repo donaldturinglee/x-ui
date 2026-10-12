@@ -92,6 +92,7 @@ const TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0";
 
 const buildTelegram = (overrides: Partial<TelegramRequest> = {}): TelegramRequest => ({
     enabled: false,
+    tokenSet: false,
     token: "",
     chats: [],
     notifySignIn: true,
@@ -107,13 +108,15 @@ describe("the Telegram bot's settings", () => {
         expect(
             fromTelegramSettings({
                 tgBotEnable: "true",
+                tgBotTokenSet: "true",
                 tgBotToken: TOKEN,
                 tgBotChatIds: "1111,-100222",
                 tgNotifySignIn: "false",
             }),
         ).toEqual({
             enabled: true,
-            token: TOKEN,
+            tokenSet: true,
+            token: "",
             chats: ["1111", "-100222"],
             notifySignIn: false,
             // On until switched off, as the API starts it.
@@ -122,6 +125,12 @@ describe("the Telegram bot's settings", () => {
             statusEveryDays: 1,
             statusSendTime: "00:00",
         });
+    });
+
+    it("do not read a saved token into the replacement field", () => {
+        expect(fromTelegramSettings({ tgBotToken: TOKEN }).token).toBe("");
+        expect(fromTelegramSettings({}).tokenSet).toBe(false);
+        expect(fromTelegramSettings({ tgBotTokenSet: "false" }).tokenSet).toBe(false);
     });
 
     it("are written back as the strings the table stores, and only the bot's", () => {
@@ -151,6 +160,20 @@ describe("the Telegram bot's settings", () => {
         );
     });
 
+    it("keep a saved token when the replacement is empty and never submit its status", () => {
+        for (const token of ["", " \t "]) {
+            const values = buildTelegram({ enabled: true, tokenSet: true, token, chats: ["1"] });
+            expect(telegramRequest.safeParse(values).success).toBe(true);
+            const payload = toTelegramPayload(values);
+            expect(payload).not.toHaveProperty("tgBotToken");
+            expect(payload).not.toHaveProperty("tgBotTokenSet");
+            expect(payload).not.toHaveProperty("tokenSet");
+        }
+        expect(telegramRequest.safeParse(buildTelegram({ token: ` ${TOKEN} ` })).success).toBe(
+            true,
+        );
+    });
+
     it("rejects invalid calendar intervals and clock times", () => {
         for (const statusEveryDays of [0, -1, 1.5, 36501, Number.NaN]) {
             expect(telegramRequest.safeParse(buildTelegram({ statusEveryDays })).success).toBe(
@@ -176,6 +199,19 @@ describe("the Telegram bot's settings", () => {
             telegramRequest.safeParse(buildTelegram({ enabled: true, token: TOKEN, chats: ["1"] }))
                 .success,
         ).toBe(true);
+        expect(
+            telegramRequest.safeParse(
+                buildTelegram({ enabled: true, tokenSet: true, chats: ["1"] }),
+            ).success,
+        ).toBe(true);
+        expect(
+            telegramRequest.safeParse(buildTelegram({ enabled: true, tokenSet: true })).success,
+        ).toBe(false);
+        expect(
+            telegramRequest.safeParse(
+                buildTelegram({ enabled: true, tokenSet: true, token: "invalid", chats: ["1"] }),
+            ).success,
+        ).toBe(false);
     });
 });
 

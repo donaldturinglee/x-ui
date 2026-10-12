@@ -1210,9 +1210,10 @@ paths:
       tags: [settings]
       summary: Read the runtime settings
       description: |
-        Only the options an operator may change, every value a string whatever
-        it stands for. Anything needed to start the process comes from the
-        configuration files. `/settings/startup` shows the running snapshot;
+        Runtime options an operator may change, plus the read-only bot-token
+        flag, every value a string whatever it stands for. Anything needed to
+        start the process comes from the configuration files.
+        `/settings/startup` shows the running snapshot;
         `/settings/panel` reads and saves the editable startup options.
 
         | Key | Default | |
@@ -1221,7 +1222,7 @@ paths:
         | `subEncode` | `true` | Base64 the `links` format |
         | `subShowInfo` | `false` | Name the remaining quota and expiry in the subscription |
         | `tgBotEnable` | `false` | Send notifications through the Telegram bot |
-        | `tgBotToken` | | The bot's token, from @BotFather |
+        | `tgBotTokenSet` | `false` | Read-only: whether a bot token is saved; the token itself is never returned |
         | `tgBotChatIds` | | The chats notifications go to, comma separated; negative for a group |
         | `tgNotifySignIn` | `true` | Notify each operator sign-in |
         | `tgNotifyDeplete` | `true` | Notify subscribers taken offline for quota or expiry |
@@ -1249,6 +1250,11 @@ paths:
         has to be in the shape @BotFather hands one out in, a chat id is a
         number, and the bot is not switched on without a token and at least
         one chat — it would look set up and never send a thing.
+
+        A nonempty `tgBotToken` replaces the saved token. Omitting it, or
+        sending an empty or whitespace-only value, keeps the saved token.
+        `tgBotTokenSet` is a response-only flag and is ignored on write.
+        The response has the same shape as GET and never contains the token.
       requestBody:
         required: true
         content:
@@ -1274,6 +1280,10 @@ paths:
         Named keys put back those alone, which is how one part of the settings
         page restores its own without taking the rest with it. No body, or no
         keys, puts back every one of them.
+
+        Including `tgBotToken` clears the saved token. Resetting the Telegram
+        form also restores `tgBotEnable` to false. The response never contains
+        the token; `tgBotTokenSet` reports whether one remains configured.
       requestBody:
         required: false
         content:

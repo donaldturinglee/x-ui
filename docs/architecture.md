@@ -1650,6 +1650,13 @@ before closing the database.
   look set up and never send a thing. *Send a test message*
   (`POST /telegram/test`) sends with the bot as it is saved, switched on or
   not, and answers with what Telegram said of a message it refused.
+- Settings reads, saves and resets return only `tgBotTokenSet`, a read-only
+  string flag, in place of the saved token. The Bot token input stays empty
+  until a replacement is entered, clears after a successful save, and keeps
+  its draft after a failed save. There is no configured-state hint. An omitted
+  or blank token preserves the saved value; Restore defaults clears it.
+  Enable validation and the test-message button use the saved-token flag,
+  while notifications and bot commands still read the token internally.
 
 ## Testing
 

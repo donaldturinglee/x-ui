@@ -11,9 +11,91 @@ import (
 	"testing"
 
 	"github.com/donaldturinglee/x-ui/internal/config"
+	"github.com/donaldturinglee/x-ui/internal/domain"
+	"github.com/donaldturinglee/x-ui/internal/repository"
 	"github.com/donaldturinglee/x-ui/internal/service"
 	"github.com/gin-gonic/gin"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+func TestTelegramTokenSettingsHTTPContract(t *testing.T) {
+	t.Setenv("X_UI_CONFIG_DIR", t.TempDir())
+	const token = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw0"
+	storedToken := token
+	db, err := gorm.Open(postgres.Open("host=127.0.0.1 port=1 user=test dbname=test sslmode=disable"), &gorm.Config{
+		DisableAutomaticPing: true, Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	// Only reads are intercepted. Any accidental write or transaction would
+	// reach the unavailable database and fail this test.
+	if err := db.Callback().Query().Replace("gorm:query", func(tx *gorm.DB) {
+		row := domain.Setting{Key: domain.SettingTgBotToken, Value: storedToken}
+		switch rows := tx.Statement.Dest.(type) {
+		case *[]domain.Setting:
+			*rows = []domain.Setting{row, {Key: "tgBotTokenSet", Value: "true"}}
+		case *domain.Setting:
+			*rows = row
+		default:
+			t.Fatalf("unexpected settings read %T", rows)
+		}
+		tx.RowsAffected = 1
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settings := service.NewSettingService(repository.NewStore(db))
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewSettingHandler(settings, nil, config.Default()).Register(router.Group("/api"))
+	call := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "/api/settings", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	check := func(response *httptest.ResponseRecorder, wantFlag string) {
+		t.Helper()
+		var reply struct {
+			Obj map[string]string `json:"obj"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &reply) != nil {
+			t.Fatalf("settings = %d %s", response.Code, response.Body)
+		}
+		if _, exposed := reply.Obj[domain.SettingTgBotToken]; exposed || strings.Contains(response.Body.String(), token) {
+			t.Fatal("settings response exposed the saved token")
+		}
+		if reply.Obj["tgBotTokenSet"] != wantFlag {
+			t.Fatalf("configured flag = %q, want %s", reply.Obj["tgBotTokenSet"], wantFlag)
+		}
+	}
+	check(call(http.MethodGet, ""), "true")
+	for _, body := range []string{`{}`, `{"tgBotToken":""}`, `{"tgBotToken":"  \t ","tgBotTokenSet":"false"}`} {
+		check(call(http.MethodPost, body), "true")
+	}
+	if actual, err := settings.Get(t.Context(), domain.SettingTgBotToken); err != nil || actual != token {
+		t.Fatal("the internal token read changed")
+	}
+	if response := call(http.MethodPost, `{"tgBotToken":"invalid-token"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid replacement = %d %s", response.Code, response.Body)
+	}
+	check(call(http.MethodGet, ""), "true")
+	storedToken = ""
+	// A stored or submitted flag cannot claim that a token exists.
+	check(call(http.MethodGet, ""), "false")
+	if response := call(http.MethodPost, `{"tgBotEnable":"true","tgBotChatIds":"1111","tgBotTokenSet":"true"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("enable without a token = %d %s", response.Code, response.Body)
+	}
+}
 
 func TestSubscriptionSettingsHTTPContract(t *testing.T) {
 	t.Setenv("X_UI_CONFIG_DIR", t.TempDir())

@@ -136,6 +136,17 @@ export const defaultSettings: Record<string, string> = {
     tgStatusSendTime: "00:00",
 };
 
+// The bot uses the stored token, but settings responses only expose whether
+// it exists. The replacement input cannot get the saved value back.
+const shownSettings = (stored: Record<string, string>) => {
+    const values: Record<string, string> = {
+        ...stored,
+        tgBotTokenSet: String(Boolean(stored.tgBotToken?.trim())),
+    };
+    delete values.tgBotToken;
+    return values;
+};
+
 // What the process read from configs/ when it started, as the settings page is
 // shown it: the defaults, with no session secret set.
 export const startupSettings = {
@@ -984,15 +995,19 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
         // Every value is a string whatever it stands for, which is what the
         // panel reads them back out of.
         if (path === "/settings" && method === "GET") {
-            await route.fulfill(envelope({ ...state.settings }));
+            await route.fulfill(envelope(shownSettings(state.settings!)));
             return;
         }
 
         if (path === "/settings" && method === "POST") {
             const body = request.postDataJSON() as Record<string, string>;
 
-            state.settings = { ...state.settings, ...body };
-            await route.fulfill(envelope({ ...state.settings }));
+            const accepted = { ...body };
+            delete accepted.tgBotTokenSet;
+            if (!accepted.tgBotToken?.trim()) delete accepted.tgBotToken;
+            else accepted.tgBotToken = accepted.tgBotToken.trim();
+            state.settings = { ...state.settings, ...accepted };
+            await route.fulfill(envelope(shownSettings(state.settings)));
             return;
         }
 
@@ -1007,7 +1022,7 @@ export const mockApi = async (page: Page, state: ApiState, basePath = "/") => {
                       ...Object.fromEntries(keys.map((key) => [key, defaultSettings[key]])),
                   }
                 : { ...defaultSettings };
-            await route.fulfill(envelope({ ...state.settings }));
+            await route.fulfill(envelope(shownSettings(state.settings)));
             return;
         }
 

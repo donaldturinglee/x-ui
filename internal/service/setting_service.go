@@ -17,6 +17,9 @@ type SettingService struct {
 	store *repository.Store
 }
 
+// This response-only flag never has a settings row of its own.
+const telegramBotTokenSet = "tgBotTokenSet"
+
 func NewSettingService(store *repository.Store) *SettingService {
 	return &SettingService{store: store}
 }
@@ -39,11 +42,15 @@ func (s *SettingService) All(ctx context.Context) (map[string]string, error) {
 		if domain.ProtectedSettings[key] {
 			continue
 		}
-		if value, ok := stored[key]; ok {
-			values[key] = value
-		} else {
-			values[key] = fallback
+		value, ok := stored[key]
+		if !ok {
+			value = fallback
 		}
+		if key == domain.SettingTgBotToken {
+			values[telegramBotTokenSet] = strconv.FormatBool(strings.TrimSpace(value) != "")
+			continue
+		}
+		values[key] = value
 	}
 	return values, nil
 }
@@ -99,7 +106,7 @@ func (s *SettingService) GetInt(ctx context.Context, key string) (int, error) {
 func (s *SettingService) Save(ctx context.Context, actor string, values map[string]string) error {
 	accepted := make(map[string]string, len(values))
 	for key, value := range values {
-		if domain.ProtectedSettings[key] {
+		if domain.ProtectedSettings[key] || key == telegramBotTokenSet {
 			continue
 		}
 		if _, known := domain.DefaultSettings[key]; !known {
@@ -107,7 +114,13 @@ func (s *SettingService) Save(ctx context.Context, actor string, values map[stri
 		}
 		// Surrounding whitespace is almost always a paste artefact, while
 		// spaces inside a value can be meaningful.
-		normalised, err := normaliseSetting(key, strings.TrimSpace(value))
+		value = strings.TrimSpace(value)
+		// The panel does not read the saved token back. An empty replacement
+		// keeps it; Reset is the explicit way to remove it.
+		if key == domain.SettingTgBotToken && value == "" {
+			continue
+		}
+		normalised, err := normaliseSetting(key, value)
 		if err != nil {
 			return err
 		}

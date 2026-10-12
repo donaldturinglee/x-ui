@@ -77,6 +77,7 @@ export const toSettingsPayload = (values: SettingsRequest): Settings => ({
 // and which events are worth one.
 export const TG_BOT_ENABLE = "tgBotEnable";
 export const TG_BOT_TOKEN = "tgBotToken";
+export const TG_BOT_TOKEN_SET = "tgBotTokenSet";
 export const TG_BOT_CHAT_IDS = "tgBotChatIds";
 export const TG_NOTIFY_SIGN_IN = "tgNotifySignIn";
 export const TG_NOTIFY_DEPLETE = "tgNotifyDeplete";
@@ -103,8 +104,10 @@ const CHAT_ID = /^-?\d+$/;
 export const telegramRequest = z
     .object({
         enabled: z.boolean(),
+        tokenSet: z.boolean().default(false),
         token: z
             .string()
+            .trim()
             .refine(
                 (token) => !token || BOT_TOKEN.test(token),
                 "Use the token @BotFather gave: the bot's id, a colon and a secret.",
@@ -125,10 +128,14 @@ export const telegramRequest = z
     })
     // A bot switched on with nothing to send with or nowhere to send to would
     // look set up and never send a thing, which the API refuses as well.
-    .refine(({ enabled, token, chats }) => !enabled || (token !== "" && chats.length > 0), {
-        message: "Give the bot its token and at least one chat before switching it on.",
-        path: ["enabled"],
-    });
+    .refine(
+        ({ enabled, token, tokenSet, chats }) =>
+            !enabled || ((tokenSet || token !== "") && chats.length > 0),
+        {
+            message: "Give the bot its token and at least one chat before switching it on.",
+            path: ["enabled"],
+        },
+    );
 
 export type TelegramRequest = z.infer<typeof telegramRequest>;
 
@@ -140,7 +147,9 @@ const toChats = (value: string | undefined) =>
 
 export const fromTelegramSettings = (settings: Settings): TelegramRequest => ({
     enabled: toBoolean(settings[TG_BOT_ENABLE]),
-    token: settings[TG_BOT_TOKEN] ?? "",
+    tokenSet: toBoolean(settings[TG_BOT_TOKEN_SET]),
+    // Only a replacement is held in this field; a saved token is never read back.
+    token: "",
     chats: toChats(settings[TG_BOT_CHAT_IDS]),
     // On until switched off, as the API starts them.
     notifySignIn: settings[TG_NOTIFY_SIGN_IN] !== "false",
@@ -152,7 +161,7 @@ export const fromTelegramSettings = (settings: Settings): TelegramRequest => ({
 
 export const toTelegramPayload = (values: TelegramRequest): Settings => ({
     [TG_BOT_ENABLE]: String(values.enabled),
-    [TG_BOT_TOKEN]: values.token.trim(),
+    ...(values.token.trim() ? { [TG_BOT_TOKEN]: values.token.trim() } : {}),
     [TG_BOT_CHAT_IDS]: values.chats.join(","),
     [TG_NOTIFY_SIGN_IN]: String(values.notifySignIn),
     [TG_NOTIFY_DEPLETE]: String(values.notifyDeplete),
