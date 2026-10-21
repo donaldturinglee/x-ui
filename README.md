@@ -108,7 +108,7 @@ PostgreSQL client tools must be at least as new as the database server for backu
 For development:
 
 - Git and Bash.
-- Go 1.27.1 or newer, as specified in [go.mod](go.mod).
+- Go 1.27.3 or newer, as specified in [go.mod](go.mod).
 - Node.js 22 or newer and npm for the web panel.
 - PostgreSQL 13 or newer, or Docker Compose to run [compose.yaml](compose.yaml).
 

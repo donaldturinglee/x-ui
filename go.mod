@@ -1,6 +1,6 @@
 module github.com/donaldturinglee/x-ui
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/gin-contrib/gzip v1.2.7
