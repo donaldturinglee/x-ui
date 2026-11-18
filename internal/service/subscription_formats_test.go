@@ -368,27 +368,29 @@ func TestClashRenderedConfiguration(t *testing.T) {
 	if rendered.DNS.Fallback == nil || len(rendered.DNS.Fallback) != 0 {
 		t.Errorf("fallback = %v, want an explicit empty list", rendered.DNS.Fallback)
 	}
-	if !reflect.DeepEqual(rendered.DNS.DefaultNameserver, []string{"system"}) {
-		t.Errorf("default DNS resolvers = %v, want only the system resolver", rendered.DNS.DefaultNameserver)
+	wantPublicDoH := []string{"https://8.8.8.8/dns-query", "https://1.1.1.1/dns-query"}
+	if !slices.Equal(rendered.DNS.DefaultNameserver, wantPublicDoH) {
+		t.Errorf("default DNS resolvers = %v, want %v", rendered.DNS.DefaultNameserver, wantPublicDoH)
 	}
-	if !reflect.DeepEqual(rendered.DNS.ProxyServerNameserver, []string{"system"}) {
-		t.Errorf("proxy server DNS resolvers = %v, want only the system resolver", rendered.DNS.ProxyServerNameserver)
+	if !slices.Equal(rendered.DNS.ProxyServerNameserver, wantPublicDoH) {
+		t.Errorf("proxy server DNS resolvers = %v, want %v", rendered.DNS.ProxyServerNameserver, wantPublicDoH)
 	}
 	if !rendered.DNS.DirectNameserverFollowPolicy {
 		t.Error("direct DNS resolution does not follow the domain policies")
 	}
-	if !reflect.DeepEqual(rendered.DNS.DirectNameserver, []string{"system"}) {
-		t.Errorf("direct DNS resolvers = %v, want local resolution by default", rendered.DNS.DirectNameserver)
+	if !slices.Equal(rendered.DNS.DirectNameserver, wantPublicDoH) {
+		t.Errorf("direct DNS resolvers = %v, want %v", rendered.DNS.DirectNameserver, wantPublicDoH)
 	}
 	wantPolicies := map[string][]string{
-		"localhost":               {"system"},
-		"+.lan":                   {"system"},
-		"+.local":                 {"system"},
-		"rule-set:reject":         {"rcode://success"},
-		"rule-set:private,direct": {"system"},
+		"localhost":        {"system"},
+		"+.lan":            {"system"},
+		"+.local":          {"system"},
+		"rule-set:reject":  {"rcode://success"},
+		"rule-set:private": {"system"},
+		"rule-set:direct":  wantPublicDoH,
 	}
 	if !reflect.DeepEqual(rendered.DNS.NameserverPolicy, wantPolicies) {
-		t.Errorf("nameserver policies = %v, want local and direct domains resolved locally and rejected domains answered with an empty success response: %v", rendered.DNS.NameserverPolicy, wantPolicies)
+		t.Errorf("nameserver policies = %v, want %v", rendered.DNS.NameserverPolicy, wantPolicies)
 	}
 	if rendered.DNS.FakeIPFilterMode != "blacklist" {
 		t.Errorf("fake IP filter mode = %q, want blacklist", rendered.DNS.FakeIPFilterMode)
@@ -499,8 +501,11 @@ func TestClashRenderedFormatting(t *testing.T) {
       - system
     "rule-set:reject":
       - rcode://success
-    "rule-set:private,direct":
+    "rule-set:private":
       - system
+    "rule-set:direct":
+      - "https://8.8.8.8/dns-query"
+      - "https://1.1.1.1/dns-query"
 `
 	if !strings.Contains(body, wantPolicies) {
 		t.Errorf("subscription does not preserve local DNS exceptions before rejection and direct policies with two-space indentation:\n%s", body)

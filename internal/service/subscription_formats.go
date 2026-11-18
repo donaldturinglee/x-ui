@@ -79,7 +79,8 @@ const clashTemplate = `dns:
   fake-ip-range: 198.18.0.1/16
 
   default-nameserver:
-    - system
+    - "https://8.8.8.8/dns-query"
+    - "https://1.1.1.1/dns-query"
 
   nameserver:
     - "tls://1.1.1.1#PROXY"
@@ -90,10 +91,12 @@ const clashTemplate = `dns:
   fallback: []
 
   proxy-server-nameserver:
-    - system
+    - "https://8.8.8.8/dns-query"
+    - "https://1.1.1.1/dns-query"
 
   direct-nameserver:
-    - system
+    - "https://8.8.8.8/dns-query"
+    - "https://1.1.1.1/dns-query"
 
   direct-nameserver-follow-policy: true
 
@@ -106,8 +109,11 @@ const clashTemplate = `dns:
       - system
     "rule-set:reject":
       - rcode://success
-    "rule-set:private,direct":
+    "rule-set:private":
       - system
+    "rule-set:direct":
+      - "https://8.8.8.8/dns-query"
+      - "https://1.1.1.1/dns-query"
 
   fake-ip-filter-mode: blacklist
   fake-ip-filter:
